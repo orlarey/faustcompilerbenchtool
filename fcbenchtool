@@ -1,0 +1,25 @@
+#!/bin/bash
+
+CXX=clang++-mp-18
+SHARE=/usr/local/share/fcbenchtool
+
+# check if the user has provided the right number of arguments
+if [ $# -ne 1 ]; then
+	echo "Usage: fcbenchtool <cppfile>"
+	exit 1
+fi
+
+NAME=${1%.cpp}
+
+# build the source file to compile
+cat $SHARE/bencharch_header.cpp > $NAME.tmp.cpp
+cat $1 >> $NAME.tmp.cpp
+cat $SHARE/bencharch_footer.cpp >> $NAME.tmp.cpp
+
+# compile the source file
+$CXX -Ofast -march=native -o $NAME $NAME.tmp.cpp
+
+rm $NAME.tmp.cpp
+
+echo $NAME
+
