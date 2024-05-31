@@ -1,0 +1,19 @@
+#!/bin/bash
+
+CXX=clang++-mp-18
+SHARE=/usr/local/share/fctool
+
+# check if the user has provided the right number of arguments
+if [ $# -ne 2 ]; then
+	echo "Usage: fccomparetool <cppfile1> <cppfile2>"
+	exit 1
+fi
+
+fcplottool $1
+fcplottool $2
+
+./${1%.cpp} > ${1%.cpp}.ir
+./${2%.cpp} > ${2%.cpp}.ir
+
+diff -y ${1%.cpp}.ir ${2%.cpp}.ir
+
