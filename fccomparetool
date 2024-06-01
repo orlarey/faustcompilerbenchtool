@@ -15,5 +15,5 @@ fcplottool $2
 ./${1%.cpp} > ${1%.cpp}.ir
 ./${2%.cpp} > ${2%.cpp}.ir
 
-diff -y ${1%.cpp}.ir ${2%.cpp}.ir
+diff --suppress-common-lines -y ${1%.cpp}.ir ${2%.cpp}.ir
 
