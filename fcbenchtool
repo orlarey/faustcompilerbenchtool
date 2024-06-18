@@ -17,7 +17,7 @@ cat $1 >> $NAME.tmp.cpp
 cat $SHARE/bencharch_footer.cpp >> $NAME.tmp.cpp
 
 # compile the source file
-$CXX -Ofast -march=native -o $NAME $NAME.tmp.cpp
+$CXX -Ofast -march=native -fbracket-depth=1024 -o $NAME $NAME.tmp.cpp
 
 rm $NAME.tmp.cpp
 
