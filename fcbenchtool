@@ -1,6 +1,6 @@
 #!/bin/bash
 
-CXX=clang++
+${CXX:=clang++}
 SHARE=/usr/local/share/fctool
 
 # check if the user has provided the right number of arguments
@@ -12,9 +12,9 @@ fi
 NAME=${1%.cpp}
 
 # build the source file to compile
-cat $SHARE/bencharch_header.cpp > $NAME.tmp.cpp
-cat $1 >> $NAME.tmp.cpp
-cat $SHARE/bencharch_footer.cpp >> $NAME.tmp.cpp
+cat $SHARE/bencharch_header.cpp >$NAME.tmp.cpp
+cat $1 >>$NAME.tmp.cpp
+cat $SHARE/bencharch_footer.cpp >>$NAME.tmp.cpp
 
 # compile the source file
 $CXX -Ofast -march=native -fbracket-depth=1024 -o $NAME $NAME.tmp.cpp
@@ -22,4 +22,3 @@ $CXX -Ofast -march=native -fbracket-depth=1024 -o $NAME $NAME.tmp.cpp
 rm $NAME.tmp.cpp
 
 echo $NAME
-

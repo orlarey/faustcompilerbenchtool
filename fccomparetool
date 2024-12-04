@@ -1,6 +1,6 @@
 #!/bin/bash
 
-CXX=clang++
+${CXX:=clang++}
 SHARE=/usr/local/share/fctool
 
 # check if the user has provided the right number of arguments
@@ -12,8 +12,7 @@ fi
 fcplottool $1
 fcplottool $2
 
-./${1%.cpp} > ${1%.cpp}.ir
-./${2%.cpp} > ${2%.cpp}.ir
+./${1%.cpp} >${1%.cpp}.ir
+./${2%.cpp} >${2%.cpp}.ir
 
 diff --suppress-common-lines -y ${1%.cpp}.ir ${2%.cpp}.ir
-

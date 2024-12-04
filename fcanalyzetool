@@ -1,6 +1,6 @@
 #!/bin/bash
 
-CXX=clang++-mp-18
+${CXX:=clang++}
 SHARE=/usr/local/share/fctool
 
 # check if the user has provided the right number of arguments
@@ -12,10 +12,9 @@ fi
 NAME=${1%.cpp}
 
 # build the source file to compile
-cat $SHARE/plotarch_header.cpp > $NAME.tmp.cpp
-cat $1 >> $NAME.tmp.cpp
-cat $SHARE/plotarch_footer.cpp >> $NAME.tmp.cpp
+cat $SHARE/plotarch_header.cpp >$NAME.tmp.cpp
+cat $1 >>$NAME.tmp.cpp
+cat $SHARE/plotarch_footer.cpp >>$NAME.tmp.cpp
 
 # compile the source file
 $CXX --analyze -Xanalyzer -analyzer-output=text $NAME.tmp.cpp
-
