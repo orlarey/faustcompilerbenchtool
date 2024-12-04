@@ -1,6 +1,9 @@
 #!/bin/bash
 
-${CXX:=clang++}
+if [ -z "${CXX}" ]; then
+	CXX="clang++"
+fi
+
 SHARE=/usr/local/share/fctool
 
 # check if the user has provided the right number of arguments
