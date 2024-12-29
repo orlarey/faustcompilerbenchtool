@@ -1,25 +1,24 @@
 #!/bin/bash
 
-if [ -z "${CXX}" ]; then
-	CXX="clang++"
-fi
-
+CXX=${CXX:-clang++}
 SHARE=/usr/local/share/fctool
 
 # check if the user has provided the right number of arguments
 if [ $# -ne 1 ]; then
-	echo "Usage: fcdebugtool <cppfile>"
-	exit 1
+    echo "Usage: fcdebugtool <cppfile>"
+    exit 1
 fi
 
 NAME=${1%.cpp}
 
 # build the source file to compile
-cat $SHARE/plotarch_header.cpp >$NAME.db.cpp
-cat $1 >>$NAME.db.cpp
-cat $SHARE/plotarch_footer.cpp >>$NAME.db.cpp
+cat $SHARE/plotarch_header.cpp > $NAME.db.cpp
+cat $1 >> $NAME.db.cpp
+cat $SHARE/plotarch_footer.cpp >> $NAME.db.cpp
 
 # compile the source file
 $CXX -g -O0 -march=native -fbracket-depth=1024 -o $NAME.db $NAME.db.cpp
 
+
 echo $NAME.db
+

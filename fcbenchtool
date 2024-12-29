@@ -1,27 +1,26 @@
 #!/bin/bash
 
-if [ -z "${CXX}" ]; then
-	CXX="clang++"
-fi
-
+CXX=${CXX:-clang++}
 SHARE=/usr/local/share/fctool
 
 # check if the user has provided the right number of arguments
-if [ $# -ne 1 ]; then
-	echo "Usage: fcbenchtool <cppfile>"
-	exit 1
+if [ $# -lt 1 ] || [ $# -gt 2 ]; then
+    echo "Usage: fcbenchtool <cppfile> [<ext>]"
+    exit 1
 fi
 
 NAME=${1%.cpp}
+EXT=$2
 
 # build the source file to compile
-cat $SHARE/bencharch_header.cpp >$NAME.tmp.cpp
-cat $1 >>$NAME.tmp.cpp
-cat $SHARE/bencharch_footer.cpp >>$NAME.tmp.cpp
+cat $SHARE/bencharch_header.cpp > $NAME.tmp.cpp
+cat $1 >> $NAME.tmp.cpp
+cat $SHARE/bencharch_footer.cpp >> $NAME.tmp.cpp
 
 # compile the source file
-$CXX -Ofast -march=native -o $NAME $NAME.tmp.cpp
+$CXX -O3 -ffast-math -march=native -fbracket-depth=1024 -o "$NAME$EXT" $NAME.tmp.cpp
 
 rm $NAME.tmp.cpp
 
-echo $NAME
+echo "$NAME$EXT"
+
