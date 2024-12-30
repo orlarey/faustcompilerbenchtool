@@ -14,13 +14,14 @@ sudo ./install.sh
 
 1. Generate C++ code from a Faust file.
 2. Compile the generated C++ code with `fcbenchtool` to inject code that measures the execution time of the compute method for a count of 44100 samples.
-3. Execute the resulting binary. The result is expressed in milliseconds. The program will iterate the measurement until it has the same minimal result for at least 1000 iterations.
+3. Execute the resulting binary. The result is expressed in milliseconds. The program will iterate the measurement until it has the same minimal result for at least 1000 iterations. The minimal number of iteration can be changed when calling the binary.
 
 
 ```bash
 faust foo.dsp -o foo.cpp
 fcbenchtool foo.cpp
 sudo ./foo
+sudo ./foo 250
 ```
 
 The `fcbenchtool` utility allows you to specify a custom compiler using the CXX environment variable and an optional file extension for the generated binary. 
