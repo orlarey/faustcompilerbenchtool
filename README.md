@@ -132,3 +132,87 @@ fcexplorer.py -mcd "0 2 4 8" -vec "" foo.dsp...
 ```
 
 will generate the 8 corresponding C++ files. The generated files will be named `foo_mcd0.cpp`, `foo_mcd0_vec.cpp`, `foo_mcd2.cpp`, etc. In the example `-vec ""`  indicates an option that can be present or not, without additional arguments.
+
+
+### `fcbenchgraph.py`
+
+**fcbenchgraph.py** is a Python script designed to benchmark multiple DSP files with different FAUST parameter configurations and generate comparative performance graphs.
+
+#### Features
+
+- Benchmark multiple `.dsp` files with various FAUST compiler configurations
+- Generate performance comparison matrices and statistics
+- Create visual graphs showing performance differences across configurations
+- Support for custom iteration counts and binary extensions
+- Automatic graph generation with matplotlib (optional)
+
+#### Usage
+
+```bash
+fcbenchgraph.py <file_pattern> <faust_config1> [faust_config2] ... [OPTIONS]
+```
+
+#### Parameters
+
+- **file_pattern**: Glob pattern for `.dsp` files to benchmark (e.g., `"*.dsp"`, `"tests/**/*.dsp"`)
+- **faust_config**: One or more FAUST parameter sets to test (e.g., `"-lang cpp"`, `"-lang cpp -vec"`)
+
+#### Options
+
+- `--iterations N`: Number of benchmark iterations (default: 1000)
+- `--extension EXT`: Extension for generated binaries (default: `.bench`)
+- `--no-graph`: Disable graph generation
+- `--graph-output FILE`: Custom graph filename (default: `benchmark_YYYYMMDD_HHMMSS.png`)
+
+#### Examples
+
+1. **Basic benchmarking with single configuration**:
+
+   ```bash
+   fcbenchgraph.py "*.dsp" "-lang cpp"
+   ```
+
+2. **Compare multiple configurations**:
+
+   ```bash
+   fcbenchgraph.py "tests/impulse-tests/dsp/*.dsp" "-lang cpp" "-lang cpp -vec" "-lang cpp -double"
+   ```
+
+3. **Custom iterations and graph output**:
+
+   ```bash
+   fcbenchgraph.py "*.dsp" "-lang cpp" "-lang rust" --iterations=500 --graph-output=my_benchmark.png
+   ```
+
+#### Output
+
+The script generates:
+
+1. **Console output**:
+   - Progress information during benchmarking
+   - Results matrix showing execution times in milliseconds
+   - Configuration details and statistics
+   - Global success rates
+
+2. **Graph file** (if matplotlib is available):
+   - Visual comparison of performance across configurations
+   - Line plots showing execution times for each DSP file
+   - Command information and generation timestamp
+   - Automatic filename with timestamp if not specified
+
+#### Prerequisites
+
+- FAUST compiler must be installed and accessible
+- `fcbenchtool` must be installed (from this toolkit)
+- Python 3 with standard libraries
+- matplotlib (optional, for graph generation): `pip install matplotlib`
+
+#### Process
+
+For each DSP file and configuration combination:
+
+1. Compiles the DSP file using FAUST with specified parameters
+2. Uses `fcbenchtool` to create a benchmarking binary
+3. Executes the binary to measure performance
+4. Collects timing results and generates statistics
+5. Creates comparative visualizations (if matplotlib is available)
