@@ -26,6 +26,8 @@ Assuming you have compiled `foo.dsp` into `foo.cpp`, the following tools are ava
    
 7. **`fcexplorer.py`**: A Python script to explore various Faust compilation options and their impact on the generated C++ code.
 
+8. **`fcanalyze.py`**: A Python script to analyze multiple DSP files with different FAUST configurations using static analysis to detect warnings and errors.
+
 
 ---
 
@@ -216,3 +218,78 @@ For each DSP file and configuration combination:
 3. Executes the binary to measure performance
 4. Collects timing results and generates statistics
 5. Creates comparative visualizations (if matplotlib is available)
+
+
+### `fcanalyze.py`
+
+**fcanalyze.py** is a Python script designed to analyze multiple DSP files with different FAUST parameter configurations using static analysis. Instead of measuring performance like `fcbenchgraph.py`, it focuses on detecting warnings, errors, and potential issues in the generated C++ code.
+
+#### Features
+
+- Analyze multiple `.dsp` files with various FAUST compiler configurations
+- Use `fcanalyzetool` to perform static analysis on generated C++ code
+- Generate analysis comparison matrices and statistics
+- Detect warnings, errors, and potential code issues
+- Identify the most problematic files across configurations
+
+#### Usage
+
+```bash
+fcanalyze.py <file_pattern> <faust_config1> [faust_config2] ... [OPTIONS]
+```
+
+#### Parameters
+
+- **file_pattern**: Glob pattern for `.dsp` files to analyze (e.g., `"*.dsp"`, `"tests/**/*.dsp"`)
+- **faust_config**: One or more FAUST parameter sets to test (e.g., `"-lang cpp"`, `"-lang cpp -vec"`)
+
+#### Examples
+
+1. **Basic analysis with single configuration**:
+
+   ```bash
+   fcanalyze.py "*.dsp" "-lang cpp"
+   ```
+
+2. **Compare multiple configurations**:
+
+   ```bash
+   fcanalyze.py "tests/impulse-tests/dsp/*.dsp" "-lang cpp" "-lang cpp -vec" "-lang cpp -double"
+   ```
+
+3. **Analyze specific file patterns**:
+
+   ```bash
+   fcanalyze.py "examples/*.dsp" "-lang cpp" "-lang rust"
+   ```
+
+#### Output
+
+The script generates console output including:
+
+1. **Progress information** during analysis for each file and configuration
+2. **Results matrix** showing analysis status:
+   - `✓ CLEAN`: No issues found
+   - `XW/YE`: X warnings and Y errors found
+   - `FAUST_ERR`: FAUST compilation failed
+   - `ANALYSIS_ERR`: Static analysis failed
+
+3. **Configuration details** and statistics per configuration
+4. **Global statistics** including success rates
+5. **Most problematic files** section listing files with the most issues
+
+#### Prerequisites
+
+- FAUST compiler must be installed and accessible
+- `fcanalyzetool` must be installed (from this toolkit)
+- Python 3 with standard libraries
+
+#### Process
+
+For each DSP file and configuration combination:
+
+1. Compiles the DSP file using FAUST with specified parameters
+2. Uses `fcanalyzetool` to perform static analysis on the generated C++ code
+3. Parses analysis output to extract warnings, errors, and other issues
+4. Collects results and generates comprehensive statistics
+5. Provides a summary of code quality across different configurations
