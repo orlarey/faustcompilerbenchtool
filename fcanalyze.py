@@ -28,17 +28,21 @@ Examples:
   %(prog)s "tests/impulse-tests/dsp/*.dsp" "-lang cpp"
   %(prog)s "*.dsp" "-lang cpp" "-lang cpp -vec" "-lang cpp -double"
   %(prog)s "*.dsp" "-lang cpp" "-lang rust"
+  %(prog)s "*.dsp" "-lang cpp" --show-warnings
 
 The script analyzes each DSP file with all FAUST parameter sets
 and displays a comparative analysis results matrix.
             """
         )
-        
-        parser.add_argument('file_pattern', 
+
+        parser.add_argument('file_pattern',
                           help='Pattern of .dsp files to analyze')
         parser.add_argument('faust_configs', nargs='+',
                           help='One or more FAUST parameter sets')
-        
+        parser.add_argument('-w', '--show-warnings',
+                          action='store_true',
+                          help='Display detailed warnings and issues found during analysis')
+
         return parser.parse_args()
 
     def find_files(self, pattern: str) -> List[str]:
@@ -87,9 +91,9 @@ and displays a comparative analysis results matrix.
         except Exception as e:
             return -1, f"ERROR: {str(e)}"
 
-    def analyze_file(self, dsp_file: str, config_idx: int, faust_params: str) -> Tuple[str, dict]:
+    def analyze_file(self, dsp_file: str, config_idx: int, faust_params: str, show_warnings: bool = False) -> Tuple[str, dict]:
         """Analyze a file with a given configuration."""
-        
+
         print(f"  → Configuration [{config_idx + 1}]: {faust_params}")
         
         # Step 1: FAUST compilation
@@ -128,7 +132,13 @@ and displays a comparative analysis results matrix.
             status = "CLEAN"
             
         print(f"    → Analysis: {warnings} warnings, {errors} errors, {total_issues} total issues")
-        
+
+        # Display warnings if requested
+        if show_warnings and len(issues) > 0:
+            print(f"    → Details:")
+            for issue in issues:
+                print(f"       {issue}")
+
         # Cleanup
         try:
             if os.path.exists(self.temp_cpp):
@@ -145,7 +155,7 @@ and displays a comparative analysis results matrix.
             'warnings': warnings,
             'errors': errors,
             'total_issues': total_issues,
-            'issues': issues[:10]  # Keep first 10 issues for display
+            'issues': issues  # Keep all issues
         }
         
         return status, result
@@ -157,19 +167,21 @@ and displays a comparative analysis results matrix.
         if not files:
             print(f"No files found for pattern: {args.file_pattern}")
             return
-            
+
         # Statistics initialization
         for i in range(len(args.faust_configs)):
             self.config_stats[i] = {'issues': 0, 'warnings': 0, 'errors': 0, 'count': 0}
-            
+
         print("=== FAUST files analysis ===")
         print(f"File pattern: {args.file_pattern}")
         print("FAUST parameter sets:")
         for i, config in enumerate(args.faust_configs):
             print(f"  [{i+1}] {config}")
+        if args.show_warnings:
+            print("Show warnings: ENABLED")
         print("=====================================")
         print()
-        
+
         total_analyses = 0
         successful_analyses = 0
         
@@ -183,9 +195,9 @@ and displays a comparative analysis results matrix.
             
             for config_idx, faust_params in enumerate(args.faust_configs):
                 total_analyses += 1
-                
+
                 status, result = self.analyze_file(
-                    dsp_file, config_idx, faust_params
+                    dsp_file, config_idx, faust_params, args.show_warnings
                 )
                 
                 self.results[basename][config_idx] = result
