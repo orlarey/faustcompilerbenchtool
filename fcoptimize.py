@@ -548,6 +548,61 @@ the configuration that produces the fastest executable.
         print(f"  Command: faust {best_config} <file.dsp> -o <file.cpp>")
         print("=" * 70)
 
+    def compute_parameter_importance(self, sensitivity_results: list) -> list:
+        """Compute relative importance of each parameter.
+
+        Args:
+            sensitivity_results: List of sensitivity analysis results
+
+        Returns:
+            List of dicts with parameter, importance_score, and category
+        """
+        # Calculate total impact across all parameters
+        total_impact = sum(r['max_impact'] for r in sensitivity_results)
+
+        if total_impact == 0:
+            # All parameters have zero impact, assign equal importance
+            importance = []
+            for result in sensitivity_results:
+                importance.append({
+                    'parameter': result['option'],
+                    'importance_score': 1.0 / len(sensitivity_results) if sensitivity_results else 0,
+                    'category': 'LOW'
+                })
+            return importance
+
+        # Compute relative importance
+        importance = []
+        for result in sensitivity_results:
+            relative_importance = result['max_impact'] / total_impact
+            category = self.categorize_importance(relative_importance)
+
+            importance.append({
+                'parameter': result['option'],
+                'importance_score': relative_importance,
+                'category': category
+            })
+
+        return importance
+
+    def categorize_importance(self, score: float) -> str:
+        """Categorize parameter importance.
+
+        Args:
+            score: Relative importance score (0-1)
+
+        Returns:
+            Category string: CRITICAL, HIGH, MODERATE, or LOW
+        """
+        if score > 0.20:
+            return "CRITICAL"
+        elif score > 0.10:
+            return "HIGH"
+        elif score > 0.05:
+            return "MODERATE"
+        else:
+            return "LOW"
+
     def save_results(self, filename: str):
         """Save results to JSON file."""
         data = {
@@ -577,8 +632,14 @@ the configuration that produces the fastest executable.
         If a better configuration is found, the analysis iterates until convergence
         to a local optimum.
         """
+        # Significance threshold: only improvements > 0.5% are considered significant
+        MIN_IMPROVEMENT_THRESHOLD = 0.005  # 0.5%
+
         print("\n" + "=" * 70)
         print("=== SENSITIVITY ANALYSIS WITH LOCAL OPTIMIZATION ===")
+        print("=" * 70)
+        print(f"Significance threshold: {MIN_IMPROVEMENT_THRESHOLD * 100:.1f}%")
+        print("(Only improvements exceeding this threshold will trigger a new iteration)")
         print("=" * 70)
 
         current_config = best_config_dict.copy()
@@ -637,12 +698,16 @@ the configuration that produces the fastest executable.
                         sign = "+" if impact > 0 else ""
                         improvement_marker = ""
 
-                        # Check if this is better
-                        if test_time < current_time:
+                        # Check if this is significantly better (exceeds threshold)
+                        improvement_ratio = (current_time - test_time) / current_time
+                        if improvement_ratio > MIN_IMPROVEMENT_THRESHOLD:
                             improvement_marker = " ⚠️  BETTER!"
                             if best_improvement is None or test_time < best_improvement[1]:
                                 best_improvement = (option_name, test_time, test_value, modified_config)
                                 found_better = True
+                        elif test_time < current_time:
+                            # Better but below significance threshold
+                            improvement_marker = " (below threshold)"
 
                         print(f"  → {option_name}={test_value}: {test_time:.3f}ms ({sign}{impact:.1f}%){improvement_marker}")
                     else:
@@ -693,7 +758,8 @@ the configuration that produces the fastest executable.
             else:
                 print(f"\n{'=' * 70}")
                 print(f"CONVERGENCE REACHED!")
-                print(f"No better configuration found in iteration {iteration}.")
+                print(f"No significant improvement found in iteration {iteration}.")
+                print(f"(All improvements were below the {MIN_IMPROVEMENT_THRESHOLD * 100:.1f}% threshold)")
                 print(f"Local optimum: {current_time:.3f}ms")
                 print(f"{'=' * 70}")
                 break
@@ -721,17 +787,55 @@ the configuration that produces the fastest executable.
             print(f"{rank:<6} {result['option']:<25} {str(result['current_value']):<15} "
                   f"{result['max_impact']:>10.1f}% {result['avg_impact']:>10.1f}%")
 
+        # Compute parameter importance
         print("\n" + "=" * 70)
-        print("INTERPRETATION:")
-        print("  - Options with high 'Max Impact' are most critical for performance")
-        print("  - These options should be prioritized during manual tuning")
-        print("  - Low-impact options have minimal effect on this DSP program")
-        if iteration > 1:
-            print(f"  - Converged after {iteration} iterations of local optimization")
+        print("=== PARAMETER IMPORTANCE ANALYSIS ===")
         print("=" * 70)
 
-        # Save sensitivity results to JSON
-        sensitivity_file = f"{dsp_basename}_sensitivity_{args.lang}_{timestamp}.json"
+        importance_data = self.compute_parameter_importance(final_sensitivity)
+
+        # Display by category
+        categories = {
+            'CRITICAL': [],
+            'HIGH': [],
+            'MODERATE': [],
+            'LOW': []
+        }
+
+        for item in importance_data:
+            categories[item['category']].append(item)
+
+        if categories['CRITICAL']:
+            print("\n🔴 CRITICAL IMPACT (>20% of total impact):")
+            for item in categories['CRITICAL']:
+                print(f"   • {item['parameter']:<25s}: {item['importance_score']*100:5.1f}%")
+
+        if categories['HIGH']:
+            print("\n🟡 HIGH IMPACT (10-20%):")
+            for item in categories['HIGH']:
+                print(f"   • {item['parameter']:<25s}: {item['importance_score']*100:5.1f}%")
+
+        if categories['MODERATE']:
+            print("\n🟢 MODERATE IMPACT (5-10%):")
+            for item in categories['MODERATE']:
+                print(f"   • {item['parameter']:<25s}: {item['importance_score']*100:5.1f}%")
+
+        if categories['LOW']:
+            print("\n⚪ LOW IMPACT (<5%):")
+            for item in categories['LOW']:
+                print(f"   • {item['parameter']:<25s}: {item['importance_score']*100:5.1f}%")
+
+        print("\n" + "=" * 70)
+        print("RECOMMENDATIONS:")
+        print("  ✓ Focus optimization on CRITICAL and HIGH impact parameters")
+        print("  ✓ MODERATE parameters can use default or simple heuristics")
+        print("  ✓ LOW impact parameters should be fixed to safe defaults")
+        if iteration > 1:
+            print(f"  ✓ Converged after {iteration} iterations of local optimization")
+        print("=" * 70)
+
+        # Save sensitivity results to JSON (for machine processing)
+        sensitivity_json_file = f"{dsp_basename}_sensitivity_{args.lang}_{timestamp}.json"
         sensitivity_data = {
             'timestamp': datetime.now().isoformat(),
             'dsp_file': args.dsp_file,
@@ -741,18 +845,28 @@ the configuration that produces the fastest executable.
             'final_config': current_config,
             'total_iterations': iteration,
             'all_iterations': all_iterations_results,
-            'final_sensitivity_ranking': final_sensitivity
+            'final_sensitivity_ranking': final_sensitivity,
+            'parameter_importance': importance_data
         }
 
-        with open(sensitivity_file, 'w') as f:
+        with open(sensitivity_json_file, 'w') as f:
             json.dump(sensitivity_data, f, indent=2)
 
-        print(f"\nSensitivity results saved to: {sensitivity_file}")
+        print(f"\nSensitivity results saved to: {sensitivity_json_file}")
+
+        # Save sensitivity results to text file (human-readable)
+        sensitivity_txt_file = f"{dsp_basename}_sensitivity_{args.lang}_{timestamp}.txt"
+        self.save_sensitivity_report(
+            sensitivity_txt_file, args.dsp_file, best_time, current_time,
+            iteration, final_sensitivity, importance_data, current_config
+        )
+        print(f"Human-readable report saved to: {sensitivity_txt_file}")
 
         # Generate sensitivity graph if matplotlib available
         if MATPLOTLIB_AVAILABLE and final_sensitivity:
             self.generate_sensitivity_graph(
                 final_sensitivity,
+                importance_data,
                 f"{dsp_basename}_sensitivity_{args.lang}_{timestamp}.png"
             )
 
@@ -767,42 +881,175 @@ the configuration that produces the fastest executable.
             print(f"  Command: faust {config_str} <file.dsp> -o <file.cpp>")
             print("=" * 70)
 
-    def generate_sensitivity_graph(self, sensitivity_results: list, filename: str) -> None:
-        """Generate a bar chart showing option sensitivity."""
+    def save_sensitivity_report(self, filename: str, dsp_file: str, initial_time: float,
+                                 final_time: float, iterations: int, sensitivity_results: list,
+                                 importance_data: list, final_config: dict) -> None:
+        """Save sensitivity analysis report to human-readable text file."""
+        with open(filename, 'w', encoding='utf-8') as f:
+            # Header
+            f.write("=" * 70 + "\n")
+            f.write("SENSITIVITY ANALYSIS REPORT\n")
+            f.write("=" * 70 + "\n\n")
+
+            # Basic information
+            f.write(f"DSP file: {dsp_file}\n")
+            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Initial time: {initial_time:.3f}ms\n")
+            f.write(f"Final optimized time: {final_time:.3f}ms\n")
+
+            if final_time < initial_time:
+                improvement = ((initial_time - final_time) / initial_time) * 100
+                f.write(f"Total improvement from sensitivity analysis: {improvement:.1f}%\n")
+
+            if iterations > 1:
+                f.write(f"Converged after {iterations} iterations of local optimization\n")
+
+            f.write("\n")
+
+            # Sensitivity ranking table
+            f.write("=" * 70 + "\n")
+            f.write("SENSITIVITY RANKING\n")
+            f.write("=" * 70 + "\n\n")
+
+            f.write(f"{'Rank':<6} {'Option':<25} {'Current':<15} {'Max Impact':<12} {'Avg Impact':<12}\n")
+            f.write("-" * 70 + "\n")
+
+            for rank, result in enumerate(sensitivity_results, 1):
+                f.write(f"{rank:<6} {result['option']:<25} {str(result['current_value']):<15} "
+                       f"{result['max_impact']:>10.1f}% {result['avg_impact']:>10.1f}%\n")
+
+            f.write("\n")
+
+            # Parameter importance analysis
+            f.write("=" * 70 + "\n")
+            f.write("PARAMETER IMPORTANCE ANALYSIS\n")
+            f.write("=" * 70 + "\n\n")
+
+            # Display by category
+            categories = {
+                'CRITICAL': [],
+                'HIGH': [],
+                'MODERATE': [],
+                'LOW': []
+            }
+
+            for item in importance_data:
+                categories[item['category']].append(item)
+
+            if categories['CRITICAL']:
+                f.write("🔴 CRITICAL IMPACT (>20% of total impact):\n")
+                for item in categories['CRITICAL']:
+                    f.write(f"   • {item['parameter']:<25s}: {item['importance_score']*100:5.1f}%\n")
+                f.write("\n")
+
+            if categories['HIGH']:
+                f.write("🟡 HIGH IMPACT (10-20%):\n")
+                for item in categories['HIGH']:
+                    f.write(f"   • {item['parameter']:<25s}: {item['importance_score']*100:5.1f}%\n")
+                f.write("\n")
+
+            if categories['MODERATE']:
+                f.write("🟢 MODERATE IMPACT (5-10%):\n")
+                for item in categories['MODERATE']:
+                    f.write(f"   • {item['parameter']:<25s}: {item['importance_score']*100:5.1f}%\n")
+                f.write("\n")
+
+            if categories['LOW']:
+                f.write("⚪ LOW IMPACT (<5%):\n")
+                for item in categories['LOW']:
+                    f.write(f"   • {item['parameter']:<25s}: {item['importance_score']*100:5.1f}%\n")
+                f.write("\n")
+
+            # Recommendations
+            f.write("=" * 70 + "\n")
+            f.write("RECOMMENDATIONS\n")
+            f.write("=" * 70 + "\n\n")
+
+            f.write("  ✓ Focus optimization on CRITICAL and HIGH impact parameters\n")
+            f.write("  ✓ MODERATE parameters can use default or simple heuristics\n")
+            f.write("  ✓ LOW impact parameters should be fixed to safe defaults\n")
+
+            if iterations > 1:
+                f.write(f"  ✓ Converged after {iterations} iterations of local optimization\n")
+
+            f.write("\n")
+
+            # Final optimized configuration
+            if final_time < initial_time:
+                f.write("=" * 70 + "\n")
+                f.write("OPTIMIZED CONFIGURATION\n")
+                f.write("=" * 70 + "\n\n")
+
+                f.write(f"  Time: {final_time:.3f}ms\n")
+                improvement = ((initial_time - final_time) / initial_time) * 100
+                f.write(f"  Improvement: {improvement:.1f}% better than initial\n")
+
+                config_str = self.option_space.config_to_string(final_config)
+                f.write(f"  Command: faust {config_str} <file.dsp> -o <file.cpp>\n")
+
+                f.write("\n" + "=" * 70 + "\n")
+
+    def generate_sensitivity_graph(self, sensitivity_results: list, importance_data: list, filename: str) -> None:
+        """Generate a bar chart showing option sensitivity with importance categories."""
         if not sensitivity_results:
             return
 
-        fig, ax = plt.subplots(figsize=(12, max(6, len(sensitivity_results) * 0.4)))
+        fig, ax = plt.subplots(figsize=(14, max(6, len(sensitivity_results) * 0.4)))
 
         # Prepare data
         options = [r['option'] for r in sensitivity_results]
         max_impacts = [r['max_impact'] for r in sensitivity_results]
-        avg_impacts = [r['avg_impact'] for r in sensitivity_results]
+
+        # Map categories to colors
+        category_colors = {
+            'CRITICAL': '#d62728',  # Red
+            'HIGH': '#ff7f0e',      # Orange
+            'MODERATE': '#2ca02c',  # Green
+            'LOW': '#7f7f7f'        # Gray
+        }
+
+        # Create importance lookup
+        importance_map = {item['parameter']: item['category'] for item in importance_data}
+
+        # Get colors for each option
+        colors = [category_colors.get(importance_map.get(opt, 'LOW'), '#7f7f7f') for opt in options]
 
         y_pos = range(len(options))
 
-        # Create horizontal bar chart
-        bars1 = ax.barh([y - 0.2 for y in y_pos], max_impacts, 0.4,
-                        label='Max Impact', color='#d62728', alpha=0.8)
-        bars2 = ax.barh([y + 0.2 for y in y_pos], avg_impacts, 0.4,
-                        label='Avg Impact', color='#1f77b4', alpha=0.8)
+        # Create horizontal bar chart with colored bars
+        bars = ax.barh(y_pos, max_impacts, 0.6, color=colors, alpha=0.8)
+
+        # Add category markers on the left
+        for i, opt in enumerate(options):
+            category = importance_map.get(opt, 'LOW')
+            emoji = {'CRITICAL': '🔴', 'HIGH': '🟡', 'MODERATE': '🟢', 'LOW': '⚪'}.get(category, '')
+            ax.text(-0.5, i, emoji, fontsize=12, ha='right', va='center')
 
         ax.set_yticks(y_pos)
         ax.set_yticklabels(options)
         ax.invert_yaxis()  # Most sensitive at top
-        ax.set_xlabel('Performance Impact (%)', fontsize=12)
-        ax.set_title('Sensitivity Analysis: Option Impact on Performance',
+        ax.set_xlabel('Max Performance Impact (%)', fontsize=12, fontweight='bold')
+        ax.set_title('Parameter Sensitivity & Importance Analysis',
                     fontsize=14, fontweight='bold')
-        ax.legend()
+
+        # Create custom legend
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor='#d62728', alpha=0.8, label='CRITICAL (>20%)'),
+            Patch(facecolor='#ff7f0e', alpha=0.8, label='HIGH (10-20%)'),
+            Patch(facecolor='#2ca02c', alpha=0.8, label='MODERATE (5-10%)'),
+            Patch(facecolor='#7f7f7f', alpha=0.8, label='LOW (<5%)')
+        ]
+        ax.legend(handles=legend_elements, loc='lower right', fontsize=10)
+
         ax.grid(True, alpha=0.3, axis='x')
 
         # Add value labels on bars
-        for bars in [bars1, bars2]:
-            for bar in bars:
-                width = bar.get_width()
-                if width > 0:
-                    ax.text(width, bar.get_y() + bar.get_height()/2,
-                           f'{width:.1f}%', ha='left', va='center', fontsize=8)
+        for bar in bars:
+            width = bar.get_width()
+            if width > 0:
+                ax.text(width, bar.get_y() + bar.get_height()/2,
+                       f' {width:.1f}%', ha='left', va='center', fontsize=9, fontweight='bold')
 
         plt.tight_layout()
         plt.savefig(filename, dpi=300, bbox_inches='tight')

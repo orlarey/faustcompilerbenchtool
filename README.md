@@ -429,19 +429,36 @@ The `--sensitivity-analysis` option performs an additional phase after optimizat
 
 **Key features:**
 - **Automatic refinement**: If the initial search missed the true optimum, sensitivity analysis finds and refines it
-- **Convergence detection**: Stops when reaching a local optimum where no single-option change improves performance
+- **Convergence detection**: Stops when reaching a local optimum where no single-option change improves performance (with 0.5% significance threshold)
+- **Parameter importance analysis**: Automatically categorizes parameters by their impact (CRITICAL/HIGH/MODERATE/LOW)
 - **Complete iteration history**: All iterations are saved in JSON for analysis
 
 **Output:**
 - Console report showing:
   - Progress through iterations with improvements highlighted
   - Final sensitivity ranking (most impactful options first)
+  - **Parameter importance analysis** with automatic categorization:
+    - 🔴 **CRITICAL** (>20% of total impact): Must be carefully optimized
+    - 🟡 **HIGH** (10-20%): Important to tune correctly
+    - 🟢 **MODERATE** (5-10%): Secondary priority
+    - ⚪ **LOW** (<5%): Can be fixed to safe defaults
+  - Practical recommendations for manual tuning
   - Total improvement achieved through local optimization
+- Human-readable text report: `<dsp_name>_sensitivity_<lang>_<timestamp>.txt`
+  - Same format as console output
+  - Easy to read with any text viewer (`cat`, `less`, etc.)
+  - Sensitivity ranking table
+  - Parameter importance analysis with categories
+  - Recommendations and final configuration
 - JSON file with detailed data: `<dsp_name>_sensitivity_<lang>_<timestamp>.json`
   - Initial and final configurations
   - Complete iteration history
   - Sensitivity rankings at convergence
-- Bar chart visualization (if matplotlib available): `<dsp_name>_sensitivity_<lang>_<timestamp>.png`
+  - Parameter importance scores and categories
+  - For machine processing and further analysis
+- Enhanced bar chart visualization (if matplotlib available): `<dsp_name>_sensitivity_<lang>_<timestamp>.png`
+  - Color-coded bars by importance category
+  - Visual importance indicators
 
 **Use cases:**
 - Identify which options matter most for your specific DSP algorithm
