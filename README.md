@@ -21,12 +21,16 @@ Assuming you have compiled `foo.dsp` into `foo.cpp`, the following tools are ava
 5. **`fccomparetool foo1.cpp foo2.cpp`**  
    Compares the impulse responses of `foo1.cpp` and `foo2.cpp` using `fcplottool`.
 
-6. **`fcdebugtool foo.cpp`**  
+6. **`fcdebugtool foo.cpp`**
    Similar to `fcplottool`, but produces a debug-enabled binary for use with `gdb`.
-   
+
 7. **`fcexplorer.py`**: A Python script to explore various Faust compilation options and their impact on the generated C++ code.
 
-8. **`fcanalyze.py`**: A Python script to analyze multiple DSP files with different FAUST configurations using static analysis to detect warnings and errors.
+8. **`fcbenchgraph.py`**: A Python script to benchmark multiple DSP files with different FAUST configurations and generate comparative performance graphs.
+
+9. **`fcanalyze.py`**: A Python script to analyze multiple DSP files with different FAUST configurations using static analysis to detect warnings and errors.
+
+10. **`fcoptimize.py`**: An automatic optimization tool that searches for the best Faust scalar compilation options for a given DSP file.
 
 
 ---
@@ -293,3 +297,190 @@ For each DSP file and configuration combination:
 3. Parses analysis output to extract warnings, errors, and other issues
 4. Collects results and generates comprehensive statistics
 5. Provides a summary of code quality across different configurations
+
+
+### `fcoptimize.py`
+
+**fcoptimize.py** is an automatic optimization tool that searches for the best Faust compilation options for a given DSP file. It intelligently explores the option space and identifies the configuration that produces the fastest executable.
+
+#### Features
+
+- Automatic exploration of Faust scalar compilation options
+- Focus on `cpp` and `ocpp` backends without vectorization/parallelism
+- Two search strategies: random and adaptive
+- Baseline comparison to measure improvements
+- JSON export of results for further analysis
+- Optional graph generation showing optimization progress
+- Configurable number of trials and benchmark iterations
+
+#### Explored Options
+
+The tool systematically explores these scalar-mode options focused on **performance** (using `-single` precision only, as `-double` and `-quad` would slow down computations):
+
+**Delay optimizations (especially important for ocpp):**
+- `-mcd` (max copy delay): 0, 2, 4, 6, 8, 9, 12, 16, 20 (10 not supported with ocpp)
+- `-udd` (use dense delay): 0, 1
+- `-mcl` (max copy loop): 2, 4, 8, 16 (ocpp only, fixed at 4 for cpp)
+- `-mdd` (max dense delay): 256, 512, 1024, 2048, 4096 (ocpp only, fixed at 1024 for cpp)
+- `-mca` (max cache delay): 4, 8, 16, 32 (ocpp only, fixed at 8 for cpp)
+- `-mdy` (min density): 70, 80, 90, 95 (ocpp only, fixed at 90 for cpp)
+
+**Code generation:**
+- `-ss` (scheduling strategy): 0=depth-first, 1=breadth-first, 2=special, 3=reverse breadth-first
+- `-fsr` (fixed sample rate): None (variable) or 44100 Hz
+- `-cm` (compute mix) — **cpp only**
+- `-fm def` (fast math) — **cpp only**
+- `-mapp` (math approximations)
+- `-exp10` (exp10 optimization)
+- `-it` (inline tables) — **cpp only**
+
+**FIR/IIR optimizations:**
+- `-fir` (FIR/IIR reconstruction)
+- `-ff` (factorize FIR/IIR coefficients)
+- `-mfs` (max FIR size): 256, 512, 1024, 2048
+- `-fls` (FIR loop size): 2, 4, 8, 16
+- `-irt` (IIR ring threshold): 2, 4, 8, 16
+
+**Other optimizations:**
+- `-ssel` (simplify select2)
+
+**Note:** Options marked as **cpp only** are automatically excluded when using `--lang ocpp`. The tool adapts the option space based on backend constraints.
+
+#### Usage
+
+```bash
+fcoptimize.py <dsp_file> [OPTIONS]
+```
+
+#### Parameters
+
+- **dsp_file**: Faust DSP file to optimize (required)
+
+#### Options
+
+- `--lang {cpp,ocpp}`: Target language (default: cpp)
+- `--strategy {random,adaptive}`: Search strategy (default: random)
+- `--max-trials N`: Maximum configurations to try (default: 100)
+- `--iterations N`: Benchmark iterations per config (default: 1000)
+- `--top-n N`: Show top N best configurations (default: 10)
+- `--save-results FILE`: Save results to JSON file
+- `--graph-output FILE`: Generate optimization progress graph
+- `--baseline CONFIG`: Baseline configuration for comparison (e.g., "-lang cpp")
+- `--timeout N`: Timeout per benchmark in seconds (default: 60)
+
+#### Search Strategies
+
+**Random Search** (`--strategy random`):
+- Explores the option space uniformly
+- Good for discovering unexpected optimal configurations
+- Works well with limited trials
+
+**Adaptive Search** (`--strategy adaptive`):
+- Phase 1 (30%): Random exploration
+- Phase 2 (70%): Mutations of best configurations found
+- Converges faster to local optima
+- Better for large trial counts
+
+#### Examples
+
+1. **Quick optimization with 50 trials**:
+
+   ```bash
+   fcoptimize.py foo.dsp --max-trials 50
+   ```
+
+2. **Deep search with adaptive strategy**:
+
+   ```bash
+   fcoptimize.py foo.dsp --strategy adaptive --max-trials 200
+   ```
+
+3. **Optimize for ocpp with baseline and export**:
+
+   ```bash
+   fcoptimize.py foo.dsp --lang ocpp --baseline "-lang ocpp" \
+       --save-results results.json --graph-output progress.png
+   ```
+
+4. **Fast exploration for quick feedback**:
+
+   ```bash
+   fcoptimize.py foo.dsp --max-trials 30 --iterations 500
+   ```
+
+#### Output
+
+The script automatically generates files with timestamps and always saves results:
+
+1. **Real-time progress**:
+   - Configuration being tested
+   - Benchmark result or failure
+   - Best configuration updates
+
+2. **Final summary**:
+   - Top N best configurations
+   - Execution times and speedup vs baseline
+   - Complete Faust command for best config
+
+3. **JSON results** (always saved automatically):
+   - Default filename: `<dsp_name>_opt_<lang>_<strategy>_<timestamp>.json`
+   - Can be customized with `--save-results`
+   - Contains all tested configurations, benchmark times, and configuration details
+
+4. **Progress graph** (always generated if matplotlib available):
+   - Default filename: `<dsp_name>_opt_<lang>_<strategy>_<timestamp>.png`
+   - Can be customized with `--graph-output`
+   - Shows scatter plot of all trials, running minimum line, and baseline comparison
+
+#### Example Output
+
+```
+=== RANDOM SEARCH OPTIMIZATION ===
+DSP file: reverb.dsp
+Language: ocpp
+Max trials: 100
+==================================================
+
+Testing baseline configuration: -lang ocpp
+  Baseline: 12.345ms
+
+[1/100] Testing: -lang ocpp -double -mcd 4 -dlt 512 -ftz 2
+  Result: 10.234ms ✓ NEW BEST! (-17.1% vs baseline)
+
+[2/100] Testing: -lang ocpp -single -mcd 8 -mdd 2048 -cm
+  Result: 9.876ms ✓ NEW BEST! (-20.0% vs baseline)
+
+...
+
+=== TOP 10 CONFIGURATIONS ===
+
+#1: 8.234ms (-33.3% vs baseline)
+    -lang ocpp -double -mcd 8 -mdd 2048 -dlt 256 -ftz 2
+
+#2: 8.567ms (-30.6% vs baseline)
+    -lang ocpp -single -mcd 4 -mca 16 -ftz 2 -fm def
+
+...
+
+======================================================================
+BEST CONFIGURATION:
+  Time: 8.234ms
+  Speedup vs baseline: 33.3%
+  Command: faust -lang ocpp -double -mcd 8 -mdd 2048 -dlt 256 -ftz 2 <file.dsp> -o <file.cpp>
+======================================================================
+```
+
+#### Prerequisites
+
+- FAUST compiler must be installed and accessible
+- `fcbenchtool` must be installed (from this toolkit)
+- Python 3 with standard libraries
+- matplotlib (optional, for graph generation): `pip install matplotlib`
+
+#### Tips
+
+- Start with fewer trials (30-50) to get quick feedback
+- Use `--baseline` to measure improvements over default settings
+- The `ocpp` backend often benefits more from delay optimizations (`-mcd`, `-mdd`, etc.)
+- Save results to JSON for later comparison or analysis
+- Use adaptive strategy for deep optimization (200+ trials)
