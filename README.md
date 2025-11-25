@@ -367,6 +367,7 @@ fcoptimize.py <dsp_file> [OPTIONS]
 - `--graph-output FILE`: Generate optimization progress graph
 - `--baseline CONFIG`: Baseline configuration for comparison (e.g., "-lang cpp")
 - `--timeout N`: Timeout per benchmark in seconds (default: 60)
+- `--sensitivity-analysis`: Perform sensitivity analysis on best configuration
 
 #### Search Strategies
 
@@ -407,6 +408,48 @@ fcoptimize.py <dsp_file> [OPTIONS]
    ```bash
    fcoptimize.py foo.dsp --max-trials 30 --iterations 500
    ```
+
+5. **Optimization with sensitivity analysis**:
+
+   ```bash
+   fcoptimize.py foo.dsp --max-trials 100 --sensitivity-analysis
+   ```
+
+#### Sensitivity Analysis
+
+The `--sensitivity-analysis` option performs an additional phase after optimization to identify which compiler options have the most impact on performance. This helps understand which optimizations are most critical for a specific DSP program.
+
+**How it works:**
+- Takes the best configuration found during optimization
+- For each option, tests alternative values while keeping other options fixed
+- Calculates the performance impact (percentage change) for each variation
+- **Iterative local optimization**: If a better configuration is found, the analysis automatically re-runs around the new point
+- Continues until convergence (no improvement found) or maximum iterations reached
+- Ranks options by their maximum impact on performance
+
+**Key features:**
+- **Automatic refinement**: If the initial search missed the true optimum, sensitivity analysis finds and refines it
+- **Convergence detection**: Stops when reaching a local optimum where no single-option change improves performance
+- **Complete iteration history**: All iterations are saved in JSON for analysis
+
+**Output:**
+- Console report showing:
+  - Progress through iterations with improvements highlighted
+  - Final sensitivity ranking (most impactful options first)
+  - Total improvement achieved through local optimization
+- JSON file with detailed data: `<dsp_name>_sensitivity_<lang>_<timestamp>.json`
+  - Initial and final configurations
+  - Complete iteration history
+  - Sensitivity rankings at convergence
+- Bar chart visualization (if matplotlib available): `<dsp_name>_sensitivity_<lang>_<timestamp>.png`
+
+**Use cases:**
+- Identify which options matter most for your specific DSP algorithm
+- Refine the optimization result to find true local optima
+- Understand trade-offs when manually tuning configurations
+- Prioritize which options to focus on when exploring variations
+- Determine which options can be ignored (low impact)
+- Verify that the optimization found a stable local optimum
 
 #### Output
 

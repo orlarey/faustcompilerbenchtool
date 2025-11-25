@@ -250,6 +250,8 @@ the configuration that produces the fastest executable.
                           help='Baseline configuration to compare against (e.g., "-lang cpp")')
         parser.add_argument('--timeout', type=int, default=60,
                           help='Timeout for each benchmark in seconds (default: 60)')
+        parser.add_argument('--sensitivity-analysis', action='store_true',
+                          help='Perform sensitivity analysis on best configuration')
 
         return parser.parse_args()
 
@@ -566,6 +568,247 @@ the configuration that produces the fastest executable.
 
         print(f"\nResults saved to: {filename}")
 
+    def perform_sensitivity_analysis(self, best_config_dict: dict, best_time: float,
+                                     args, dsp_basename: str, timestamp: str) -> None:
+        """Perform iterative sensitivity analysis on the best configuration.
+
+        This identifies which options have the most impact on performance by testing
+        variations around the optimal configuration (one-at-a-time method).
+        If a better configuration is found, the analysis iterates until convergence
+        to a local optimum.
+        """
+        print("\n" + "=" * 70)
+        print("=== SENSITIVITY ANALYSIS WITH LOCAL OPTIMIZATION ===")
+        print("=" * 70)
+
+        current_config = best_config_dict.copy()
+        current_time = best_time
+        iteration = 0
+        max_iterations = 10  # Prevent infinite loops
+
+        all_iterations_results = []
+
+        while iteration < max_iterations:
+            iteration += 1
+            print(f"\n{'=' * 70}")
+            print(f"ITERATION {iteration}: Analyzing around configuration ({current_time:.3f}ms)")
+            print(f"{'=' * 70}\n")
+
+            sensitivity_results = []
+            found_better = False
+            best_improvement = None
+
+            # For each option in the option space
+            for option_name, option_def in self.option_space.options.items():
+                print(f"Analyzing option: {option_name}")
+
+                current_value = current_config.get(option_name)
+                values = option_def['values']
+
+                # Skip if only one value available
+                if len(values) <= 1:
+                    print(f"  → Skipped (only one value available)")
+                    continue
+
+                impacts = []
+
+                # Test each alternative value
+                for test_value in values:
+                    if test_value == current_value:
+                        continue  # Skip current value
+
+                    # Create modified config
+                    modified_config = current_config.copy()
+                    modified_config[option_name] = test_value
+
+                    # Convert to string
+                    config_str = self.option_space.config_to_string(modified_config)
+
+                    # Benchmark
+                    test_time = self.benchmark_config(
+                        args.dsp_file, config_str, args.iterations, args.timeout
+                    )
+
+                    if test_time is not None:
+                        # Calculate impact (percentage change)
+                        impact = ((test_time - current_time) / current_time) * 100
+                        impacts.append((test_value, test_time, impact))
+
+                        sign = "+" if impact > 0 else ""
+                        improvement_marker = ""
+
+                        # Check if this is better
+                        if test_time < current_time:
+                            improvement_marker = " ⚠️  BETTER!"
+                            if best_improvement is None or test_time < best_improvement[1]:
+                                best_improvement = (option_name, test_time, test_value, modified_config)
+                                found_better = True
+
+                        print(f"  → {option_name}={test_value}: {test_time:.3f}ms ({sign}{impact:.1f}%){improvement_marker}")
+                    else:
+                        print(f"  → {option_name}={test_value}: FAILED")
+
+                # Calculate maximum absolute impact for this option
+                if impacts:
+                    max_impact = max(abs(imp) for _, _, imp in impacts)
+                    avg_impact = sum(abs(imp) for _, _, imp in impacts) / len(impacts)
+
+                    sensitivity_results.append({
+                        'option': option_name,
+                        'current_value': current_value,
+                        'max_impact': max_impact,
+                        'avg_impact': avg_impact,
+                        'variations': impacts
+                    })
+
+                print()
+
+            # Sort by maximum impact (most sensitive first)
+            sensitivity_results.sort(key=lambda x: x['max_impact'], reverse=True)
+
+            # Store this iteration's results
+            all_iterations_results.append({
+                'iteration': iteration,
+                'starting_time': current_time,
+                'starting_config': current_config.copy(),
+                'sensitivity_results': sensitivity_results
+            })
+
+            # Check if we found a better configuration
+            if found_better:
+                opt_name, new_time, new_value, new_config = best_improvement
+                improvement = ((current_time - new_time) / current_time) * 100
+
+                print(f"\n{'!' * 70}")
+                print(f"IMPROVEMENT FOUND!")
+                print(f"  Option: {opt_name} = {new_value}")
+                print(f"  Previous: {current_time:.3f}ms")
+                print(f"  New:      {new_time:.3f}ms")
+                print(f"  Gain:     {improvement:.1f}%")
+                print(f"{'!' * 70}")
+
+                # Update for next iteration
+                current_config = new_config
+                current_time = new_time
+            else:
+                print(f"\n{'=' * 70}")
+                print(f"CONVERGENCE REACHED!")
+                print(f"No better configuration found in iteration {iteration}.")
+                print(f"Local optimum: {current_time:.3f}ms")
+                print(f"{'=' * 70}")
+                break
+
+        if iteration >= max_iterations:
+            print(f"\n⚠️  Maximum iterations ({max_iterations}) reached.")
+
+        # Use the last iteration's sensitivity results for display and saving
+        final_sensitivity = all_iterations_results[-1]['sensitivity_results']
+
+        # Display summary of final (converged) configuration
+        print("\n" + "=" * 70)
+        print("=== FINAL SENSITIVITY RANKING ===")
+        print("=" * 70)
+        print(f"\nDSP file: {args.dsp_file}")
+        print(f"Final optimized time: {current_time:.3f}ms")
+        if current_time < best_time:
+            improvement = ((best_time - current_time) / best_time) * 100
+            print(f"Total improvement from sensitivity analysis: {improvement:.1f}%")
+        print()
+        print(f"{'Rank':<6} {'Option':<25} {'Current':<15} {'Max Impact':<12} {'Avg Impact':<12}")
+        print("-" * 70)
+
+        for rank, result in enumerate(final_sensitivity, 1):
+            print(f"{rank:<6} {result['option']:<25} {str(result['current_value']):<15} "
+                  f"{result['max_impact']:>10.1f}% {result['avg_impact']:>10.1f}%")
+
+        print("\n" + "=" * 70)
+        print("INTERPRETATION:")
+        print("  - Options with high 'Max Impact' are most critical for performance")
+        print("  - These options should be prioritized during manual tuning")
+        print("  - Low-impact options have minimal effect on this DSP program")
+        if iteration > 1:
+            print(f"  - Converged after {iteration} iterations of local optimization")
+        print("=" * 70)
+
+        # Save sensitivity results to JSON
+        sensitivity_file = f"{dsp_basename}_sensitivity_{args.lang}_{timestamp}.json"
+        sensitivity_data = {
+            'timestamp': datetime.now().isoformat(),
+            'dsp_file': args.dsp_file,
+            'initial_time_ms': best_time,
+            'initial_config': best_config_dict,
+            'final_time_ms': current_time,
+            'final_config': current_config,
+            'total_iterations': iteration,
+            'all_iterations': all_iterations_results,
+            'final_sensitivity_ranking': final_sensitivity
+        }
+
+        with open(sensitivity_file, 'w') as f:
+            json.dump(sensitivity_data, f, indent=2)
+
+        print(f"\nSensitivity results saved to: {sensitivity_file}")
+
+        # Generate sensitivity graph if matplotlib available
+        if MATPLOTLIB_AVAILABLE and final_sensitivity:
+            self.generate_sensitivity_graph(
+                final_sensitivity,
+                f"{dsp_basename}_sensitivity_{args.lang}_{timestamp}.png"
+            )
+
+        # Display final optimized command
+        if current_time < best_time:
+            print("\n" + "=" * 70)
+            print("OPTIMIZED CONFIGURATION:")
+            print(f"  Time: {current_time:.3f}ms")
+            improvement = ((best_time - current_time) / best_time) * 100
+            print(f"  Improvement: {improvement:.1f}% better than initial")
+            config_str = self.option_space.config_to_string(current_config)
+            print(f"  Command: faust {config_str} <file.dsp> -o <file.cpp>")
+            print("=" * 70)
+
+    def generate_sensitivity_graph(self, sensitivity_results: list, filename: str) -> None:
+        """Generate a bar chart showing option sensitivity."""
+        if not sensitivity_results:
+            return
+
+        fig, ax = plt.subplots(figsize=(12, max(6, len(sensitivity_results) * 0.4)))
+
+        # Prepare data
+        options = [r['option'] for r in sensitivity_results]
+        max_impacts = [r['max_impact'] for r in sensitivity_results]
+        avg_impacts = [r['avg_impact'] for r in sensitivity_results]
+
+        y_pos = range(len(options))
+
+        # Create horizontal bar chart
+        bars1 = ax.barh([y - 0.2 for y in y_pos], max_impacts, 0.4,
+                        label='Max Impact', color='#d62728', alpha=0.8)
+        bars2 = ax.barh([y + 0.2 for y in y_pos], avg_impacts, 0.4,
+                        label='Avg Impact', color='#1f77b4', alpha=0.8)
+
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(options)
+        ax.invert_yaxis()  # Most sensitive at top
+        ax.set_xlabel('Performance Impact (%)', fontsize=12)
+        ax.set_title('Sensitivity Analysis: Option Impact on Performance',
+                    fontsize=14, fontweight='bold')
+        ax.legend()
+        ax.grid(True, alpha=0.3, axis='x')
+
+        # Add value labels on bars
+        for bars in [bars1, bars2]:
+            for bar in bars:
+                width = bar.get_width()
+                if width > 0:
+                    ax.text(width, bar.get_y() + bar.get_height()/2,
+                           f'{width:.1f}%', ha='left', va='center', fontsize=8)
+
+        plt.tight_layout()
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f"Sensitivity graph saved to: {filename}")
+        plt.close()
+
     def generate_graph(self, filename: str, baseline_time: Optional[float]):
         """Generate optimization progress graph."""
         if not MATPLOTLIB_AVAILABLE:
@@ -646,6 +889,18 @@ the configuration that produces the fastest executable.
         graph_file = args.graph_output if args.graph_output else auto_graph_file
         if MATPLOTLIB_AVAILABLE:
             self.generate_graph(graph_file, baseline_time)
+
+        # Sensitivity analysis (optional)
+        if args.sensitivity_analysis:
+            # Get best configuration
+            successful = [(c, t, d) for c, t, d in self.results if t is not None]
+            if successful:
+                successful.sort(key=lambda x: x[1])
+                _, best_time, best_config_dict = successful[0]
+
+                self.perform_sensitivity_analysis(
+                    best_config_dict, best_time, args, dsp_basename, timestamp
+                )
 
         # Cleanup
         for f in glob.glob("temp_optimize.*"):
