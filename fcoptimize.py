@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Any
 
 try:
+    import matplotlib
+    matplotlib.use('Agg')  # Force non-interactive backend for headless environments
     import matplotlib.pyplot as plt
     MATPLOTLIB_AVAILABLE = True
 except ImportError:
@@ -661,9 +663,9 @@ the configuration that produces the fastest executable.
 
             # For each option in the option space
             for option_name, option_def in self.option_space.options.items():
-                print(f"Analyzing option: {option_name}")
-
                 current_value = current_config.get(option_name)
+                print(f"Analyzing option: {option_name} (current: {option_name}={current_value} → {current_time:.3f}ms)")
+
                 values = option_def['values']
 
                 # Skip if only one value available
@@ -671,12 +673,25 @@ the configuration that produces the fastest executable.
                     print(f"  → Skipped (only one value available)")
                     continue
 
+                # Remeasure current value to estimate measurement noise
+                config_str = self.option_space.config_to_string(current_config)
+                remeasured_time = self.benchmark_config(
+                    args.dsp_file, config_str, args.iterations, args.timeout
+                )
+
+                if remeasured_time is not None:
+                    noise = ((remeasured_time - current_time) / current_time) * 100
+                    sign = "+" if noise > 0 else ""
+                    print(f"  → {option_name}={current_value}: {remeasured_time:.3f}ms ({sign}{noise:.1f}%) [baseline remeasured]")
+                else:
+                    print(f"  → {option_name}={current_value}: FAILED [baseline remeasured]")
+
                 impacts = []
 
                 # Test each alternative value
                 for test_value in values:
                     if test_value == current_value:
-                        continue  # Skip current value
+                        continue  # Skip current value (already remeasured above)
 
                     # Create modified config
                     modified_config = current_config.copy()
