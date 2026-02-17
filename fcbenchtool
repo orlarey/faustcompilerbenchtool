@@ -1,7 +1,11 @@
 #!/bin/bash
 
+set -u
+
 CXX=${CXX:-clang++}
 SHARE=/usr/local/share/fctool
+CXXFLAGS=${FCBENCH_CXXFLAGS:--O3 -ffast-math -fbracket-depth=1024}
+ARCH_FLAGS=${FCBENCH_ARCH_FLAGS:--march=native}
 
 # check if the user has provided the right number of arguments
 if [ $# -lt 1 ] || [ $# -gt 2 ]; then
@@ -18,9 +22,23 @@ cat $1 >> $NAME.tmp.cpp
 cat $SHARE/bencharch_footer.cpp >> $NAME.tmp.cpp
 
 # compile the source file
-$CXX -O3 -ffast-math -march=native -fbracket-depth=1024 -o "$NAME$EXT" $NAME.tmp.cpp
+compile_cmd="$CXX $CXXFLAGS"
+if [ -n "$ARCH_FLAGS" ]; then
+    compile_cmd="$compile_cmd $ARCH_FLAGS"
+fi
+compile_cmd="$compile_cmd -o \"$NAME$EXT\" \"$NAME.tmp.cpp\""
+
+if ! eval "$compile_cmd"; then
+    # On aarch64, some clang builds reject -march=native; retry with -mcpu=native.
+    if [ "$ARCH_FLAGS" = "-march=native" ] && [[ "$(uname -m)" =~ ^(arm64|aarch64)$ ]]; then
+        fallback_cmd="$CXX $CXXFLAGS -mcpu=native -o \"$NAME$EXT\" \"$NAME.tmp.cpp\""
+        echo "fcbenchtool: retrying compilation with -mcpu=native" >&2
+        eval "$fallback_cmd" || exit 1
+    else
+        exit 1
+    fi
+fi
 
 rm $NAME.tmp.cpp
 
 echo "$NAME$EXT"
-

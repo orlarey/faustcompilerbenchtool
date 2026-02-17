@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+
+import argparse
+import csv
+import datetime as dt
+import json
+import math
+import os
+import platform
+import re
+import statistics
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+MS_PATTERN = re.compile(r"([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\s*ms\b")
+
+
+def run_cmd(cmd):
+    return subprocess.run(cmd, text=True, capture_output=True)
+
+
+def parse_ms(output):
+    match = MS_PATTERN.search(output)
+    if not match:
+        raise ValueError(f"Cannot parse benchmark output: {output.strip()}")
+    return float(match.group(1))
+
+
+def percentile(sorted_values, p):
+    if not sorted_values:
+        return float("nan")
+    rank = int(math.ceil((p / 100.0) * len(sorted_values))) - 1
+    rank = max(0, min(rank, len(sorted_values) - 1))
+    return sorted_values[rank]
+
+
+def compute_stats(values):
+    ordered = sorted(values)
+    mean = statistics.mean(values)
+    stddev = statistics.pstdev(values) if len(values) > 1 else 0.0
+    cv = (stddev / mean) * 100.0 if mean != 0 else 0.0
+    return {
+        "count": len(values),
+        "min_ms": ordered[0],
+        "max_ms": ordered[-1],
+        "mean_ms": mean,
+        "median_ms": statistics.median(values),
+        "p95_ms": percentile(ordered, 95),
+        "stddev_ms": stddev,
+        "cv_percent": cv,
+    }
+
+
+def detect_clang(cxx):
+    try:
+        res = run_cmd([cxx, "--version"])
+        if res.returncode == 0 and res.stdout:
+            return res.stdout.splitlines()[0].strip()
+    except Exception:
+        pass
+    return "unknown"
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Compile with fcbenchtool then run consecutive benchmark measurements."
+    )
+    parser.add_argument("cppfile", help="Input Faust-generated C++ file (e.g. foo.cpp)")
+    parser.add_argument("--runs", type=int, default=20, help="Number of consecutive runs (default: 20)")
+    parser.add_argument(
+        "--stable-iters",
+        type=int,
+        default=1000,
+        help="Stability iterations passed to benchmark binary (default: 1000)",
+    )
+    parser.add_argument("--warmup-runs", type=int, default=3, help="Warmup runs before measuring (default: 3)")
+    parser.add_argument("--cooldown-ms", type=int, default=0, help="Sleep between measured runs (default: 0)")
+    parser.add_argument("--ext", default=".bench", help="Output extension for compiled benchmark binary")
+    parser.add_argument("--format", choices=["text", "json", "csv"], default="text", help="Output format")
+    parser.add_argument("--out", help="Write full output payload to file")
+
+    args = parser.parse_args()
+
+    if args.runs <= 0:
+        parser.error("--runs must be > 0")
+    if args.stable_iters <= 0:
+        parser.error("--stable-iters must be > 0")
+    if args.warmup_runs < 0:
+        parser.error("--warmup-runs must be >= 0")
+    if args.cooldown_ms < 0:
+        parser.error("--cooldown-ms must be >= 0")
+
+    cpp_path = Path(args.cppfile)
+    if not cpp_path.exists():
+        print(f"Input file not found: {cpp_path}", file=sys.stderr)
+        return 1
+
+    fcbench = run_cmd(["fcbenchtool", str(cpp_path), args.ext])
+    if fcbench.returncode != 0:
+        sys.stderr.write(fcbench.stderr or fcbench.stdout)
+        return fcbench.returncode
+
+    binary = (fcbench.stdout or "").strip().splitlines()[-1].strip()
+    if not binary:
+        print("fcbenchtool did not return an output binary path", file=sys.stderr)
+        return 1
+
+    binary_path = Path(binary)
+    if not binary_path.exists():
+        print(f"Compiled binary not found: {binary}", file=sys.stderr)
+        return 1
+    binary_cmd = str(binary_path)
+    if "/" not in binary_cmd and "\\" not in binary_cmd:
+        binary_cmd = f"./{binary_cmd}"
+
+    warmup_failures = []
+    for idx in range(args.warmup_runs):
+        res = run_cmd([binary_cmd, str(args.stable_iters)])
+        if res.returncode != 0:
+            warmup_failures.append({"run": idx + 1, "stderr": (res.stderr or "").strip()})
+
+    values = []
+    run_errors = []
+    for idx in range(args.runs):
+        res = run_cmd([binary_cmd, str(args.stable_iters)])
+        if res.returncode != 0:
+            run_errors.append({"run": idx + 1, "stderr": (res.stderr or "").strip()})
+        else:
+            try:
+                values.append(parse_ms(res.stdout))
+            except ValueError as exc:
+                run_errors.append({"run": idx + 1, "stderr": str(exc)})
+        if args.cooldown_ms:
+            time.sleep(args.cooldown_ms / 1000.0)
+
+    if not values:
+        print("All benchmark runs failed.", file=sys.stderr)
+        if run_errors:
+            print(json.dumps({"errors": run_errors}, indent=2), file=sys.stderr)
+        return 1
+
+    stats = compute_stats(values)
+    payload = {
+        "tool": "fcmultibench",
+        "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "cppfile": str(cpp_path),
+        "binary": binary_cmd,
+        "runs_requested": args.runs,
+        "runs_successful": len(values),
+        "runs_failed": len(run_errors),
+        "stable_iters": args.stable_iters,
+        "warmup_runs": args.warmup_runs,
+        "cooldown_ms": args.cooldown_ms,
+        "cxx": os.environ.get("CXX", "clang++"),
+        "clang_version": detect_clang(os.environ.get("CXX", "clang++")),
+        "host": {
+            "system": platform.system(),
+            "release": platform.release(),
+            "machine": platform.machine(),
+            "processor": platform.processor(),
+        },
+        "values_ms": values,
+        "stats": stats,
+        "errors": run_errors,
+        "warmup_errors": warmup_failures,
+    }
+
+    if args.format == "json":
+        text_output = json.dumps(payload, indent=2)
+    elif args.format == "csv":
+        lines = ["run,ms"]
+        for i, value in enumerate(values, start=1):
+            lines.append(f"{i},{value:.9f}")
+        lines.append(f"summary,min_ms,{stats['min_ms']:.9f}")
+        lines.append(f"summary,max_ms,{stats['max_ms']:.9f}")
+        lines.append(f"summary,mean_ms,{stats['mean_ms']:.9f}")
+        lines.append(f"summary,median_ms,{stats['median_ms']:.9f}")
+        lines.append(f"summary,p95_ms,{stats['p95_ms']:.9f}")
+        lines.append(f"summary,stddev_ms,{stats['stddev_ms']:.9f}")
+        lines.append(f"summary,cv_percent,{stats['cv_percent']:.6f}")
+        text_output = "\n".join(lines)
+    else:
+        text_output = (
+            f"binary: {binary_cmd}\n"
+            f"runs: {len(values)}/{args.runs} (stable-iters={args.stable_iters})\n"
+            f"min={stats['min_ms']:.6f} ms  max={stats['max_ms']:.6f} ms\n"
+            f"mean={stats['mean_ms']:.6f} ms  median={stats['median_ms']:.6f} ms\n"
+            f"p95={stats['p95_ms']:.6f} ms  stddev={stats['stddev_ms']:.6f} ms  cv={stats['cv_percent']:.3f}%"
+        )
+
+    print(text_output)
+
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if args.format == "csv":
+            out_path.write_text(text_output + "\n", encoding="utf-8")
+        elif args.format == "json":
+            out_path.write_text(text_output + "\n", encoding="utf-8")
+        else:
+            with out_path.open("w", newline="", encoding="utf-8") as fp:
+                writer = csv.writer(fp)
+                writer.writerow(["run", "ms"])
+                for i, value in enumerate(values, start=1):
+                    writer.writerow([i, f"{value:.9f}"])
+                writer.writerow(["summary", "min_ms", f"{stats['min_ms']:.9f}"])
+                writer.writerow(["summary", "max_ms", f"{stats['max_ms']:.9f}"])
+                writer.writerow(["summary", "mean_ms", f"{stats['mean_ms']:.9f}"])
+                writer.writerow(["summary", "median_ms", f"{stats['median_ms']:.9f}"])
+                writer.writerow(["summary", "p95_ms", f"{stats['p95_ms']:.9f}"])
+                writer.writerow(["summary", "stddev_ms", f"{stats['stddev_ms']:.9f}"])
+                writer.writerow(["summary", "cv_percent", f"{stats['cv_percent']:.6f}"])
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

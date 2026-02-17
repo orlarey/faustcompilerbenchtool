@@ -38,6 +38,7 @@ Assuming you have compiled `foo.dsp` into `foo.cpp`, the following tools are ava
 9. **`fcanalyze.py`**: A Python script to analyze multiple DSP files with different FAUST configurations using static analysis to detect warnings and errors.
 
 10. **`fcoptimize.py`**: An automatic optimization tool that searches for the best Faust scalar compilation options for a given DSP file.
+11. **`fcmultibench foo.cpp`**: Compiles with `fcbenchtool`, runs `n` consecutive measurements, and reports statistics (`min/max/mean/median/p95/stddev`).
 
 
 ---
@@ -65,6 +66,9 @@ faust foo.dsp -o foo.cpp
 # Benchmark the generated code
 fcbenchtool foo.cpp
 ./foo            # prints the best time over the benchmark loop
+
+# Run n consecutive measurements with stats
+fcmultibench foo.cpp --runs 30 --stable-iters 1000 --format json --out foo.bench.json
 
 # Inspect correctness by impulse response
 fcplottool foo.cpp
@@ -120,6 +124,64 @@ sudo ./foo.cl19
 - Compare the impact of Faust flags: build `foo_vec.cpp` with `-vec`, `foo_scalar.cpp` without, then benchmark both binaries.
 - Validate performance regressions: run `fcbenchtool` on the same source before/after a code change and archive the printed timings.
 - CPU feature investigations: set `CXX="clang++ -march=skylake"` to force a specific target and see the effect on throughput.
+
+### `fcmultibench`
+
+`fcmultibench` automates repeated executions of a benchmark binary to reduce noise and produce useful summary statistics.
+
+#### Usage
+
+```bash
+fcmultibench <cppfile> [--runs N] [--stable-iters N] [--warmup-runs N] [--cooldown-ms N] [--ext EXT] [--format text|json|csv] [--out FILE]
+```
+
+#### Examples
+
+```bash
+# 20 runs (default) + text summary
+fcmultibench foo.cpp
+
+# 40 runs, 800 stability iterations, JSON report
+fcmultibench foo.cpp --runs 40 --stable-iters 800 --format json --out foo.bench.json
+
+# CSV output on stdout
+fcmultibench foo.cpp --format csv
+```
+
+#### Reported metrics
+
+- `min_ms`, `max_ms`
+- `mean_ms`, `median_ms`
+- `p95_ms`
+- `stddev_ms`
+- `cv_percent` (coefficient of variation)
+
+#### Notes
+
+- The benchmark binary is compiled once using `fcbenchtool`, then executed consecutively.
+- `--stable-iters` is passed to the benchmark binary (`./foo <stable-iters>`).
+
+## Minimal Docker Usage
+
+This repository now includes a minimal Docker image focused on C++ benchmarking.
+
+### Build
+
+```bash
+docker build -t faust-bench-min .
+```
+
+### Run
+
+```bash
+docker run --rm -v "$PWD:/work" faust-bench-min \
+  /work/foo.cpp --runs 30 --stable-iters 1000 --format json --out /work/foo.bench.json
+```
+
+Image content:
+- `clang++` toolchain
+- `fcbenchtool` and `fcmultibench`
+- benchmark wrapper files in `/usr/local/share/fctool`
 
 
 ## Additional Tools

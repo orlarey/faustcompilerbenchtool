@@ -26,6 +26,10 @@ int main(int argc, char* argv[])
         }
 
         // If we got here, strtol() successfully parsed a number
+        if (val <= 0) {
+            std::cerr << "Iteration count must be > 0: " << argv[1] << std::endl;
+            return 1;
+        }
         N = val;
     }
     mydsp* d = new mydsp();
@@ -66,7 +70,8 @@ int main(int argc, char* argv[])
 
     std::chrono::duration<double> mindur = end - start;
 
-    while (N > 0) {
+    long stable_left = N;
+    while (stable_left > 0) {
         start = std::chrono::high_resolution_clock::now();
         d->compute(NBSAMPLES, inputs, outputs);
         end                                    = std::chrono::high_resolution_clock::now();
@@ -74,10 +79,10 @@ int main(int argc, char* argv[])
         if (duration < mindur) {
             // we have a new minimun
             mindur = duration;
-            N      = NBITERATIONS;
+            stable_left = N;
         } else {
             // minimun stable so far
-            N--;
+            stable_left--;
         }
     }
 
