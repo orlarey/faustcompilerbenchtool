@@ -42,8 +42,29 @@ and displays a comparative analysis results matrix.
         parser.add_argument('-w', '--show-warnings',
                           action='store_true',
                           help='Display detailed warnings and issues found during analysis')
+        parser.add_argument('--with-spills',
+                          action='store_true',
+                          help='Also run fcspilltool to report compute_spills/compute_stack '
+                               'per cell (one extra compile per cell)')
+        parser.add_argument('--class', dest='dsp_class', default='mydsp',
+                          help='DSP class name for --with-spills filter (default: mydsp)')
 
         return parser.parse_args()
+
+    @staticmethod
+    def parse_spill_output(output: str) -> dict:
+        """Parse fcspilltool's key:value output."""
+        metrics: dict = {}
+        for line in output.splitlines():
+            if ':' not in line:
+                continue
+            key, val = line.split(':', 1)
+            key, val = key.strip(), val.strip()
+            try:
+                metrics[key] = int(val)
+            except ValueError:
+                pass
+        return metrics
 
     def find_files(self, pattern: str) -> List[str]:
         """Find all files matching the pattern."""
@@ -91,31 +112,42 @@ and displays a comparative analysis results matrix.
         except Exception as e:
             return -1, f"ERROR: {str(e)}"
 
-    def analyze_file(self, dsp_file: str, config_idx: int, faust_params: str, show_warnings: bool = False) -> Tuple[str, dict]:
+    def analyze_file(self, dsp_file: str, config_idx: int, faust_params: str,
+                     show_warnings: bool = False,
+                     with_spills: bool = False, dsp_class: str = 'mydsp') -> Tuple[str, dict]:
         """Analyze a file with a given configuration."""
 
         print(f"  → Configuration [{config_idx + 1}]: {faust_params}")
-        
+
         # Step 1: FAUST compilation
         faust_cmd = f"faust {faust_params} {dsp_file} -o {self.temp_cpp}".split()
         ret_code, output = self.run_command(faust_cmd)
-        
+
         if ret_code != 0:
             print(f"    ✗ FAUST compilation error")
             return "FAUST_ERR", {
                 'status': 'FAUST_ERR',
                 'warnings': 0,
                 'errors': 1,
-                'issues': [f"FAUST compilation failed: {output[:200]}..."]
+                'issues': [f"FAUST compilation failed: {output[:200]}..."],
+                'spills': None,
             }
-            
+
         # Step 2: Analysis with fcanalyzetool
         fcanalyze_cmd = ["fcanalyzetool", self.temp_cpp]
         ret_code, output = self.run_command(fcanalyze_cmd)
-        
+
         # Parse analysis output
         warnings, errors, issues = self.parse_analysis_output(output)
         total_issues = len(issues)
+
+        # Step 2.5: Register spill measurement (optional)
+        spills = None
+        if with_spills:
+            sp_cmd = ["fcspilltool", "--class", dsp_class, self.temp_cpp]
+            sp_ret, sp_out = self.run_command(sp_cmd)
+            if sp_ret == 0:
+                spills = self.parse_spill_output(sp_out)
         
         # Check if compilation failed (fcanalyzetool returns non-zero and has "error" in output)
         compilation_failed = ret_code != 0 and "error" in output.lower()
@@ -131,7 +163,11 @@ and displays a comparative analysis results matrix.
         else:
             status = "CLEAN"
             
-        print(f"    → Analysis: {warnings} warnings, {errors} errors, {total_issues} total issues")
+        spill_summary = ""
+        if spills is not None:
+            spill_summary = (f", compute_spills={spills.get('compute_spills', 0)}"
+                             f", compute_stack={spills.get('compute_stack', 0)}")
+        print(f"    → Analysis: {warnings} warnings, {errors} errors, {total_issues} total issues{spill_summary}")
 
         # Display warnings if requested
         if show_warnings and len(issues) > 0:
@@ -155,9 +191,10 @@ and displays a comparative analysis results matrix.
             'warnings': warnings,
             'errors': errors,
             'total_issues': total_issues,
-            'issues': issues  # Keep all issues
+            'issues': issues,  # Keep all issues
+            'spills': spills,  # dict or None
         }
-        
+
         return status, result
 
     def run_analysis(self, args):
@@ -170,7 +207,10 @@ and displays a comparative analysis results matrix.
 
         # Statistics initialization
         for i in range(len(args.faust_configs)):
-            self.config_stats[i] = {'issues': 0, 'warnings': 0, 'errors': 0, 'count': 0}
+            self.config_stats[i] = {
+                'issues': 0, 'warnings': 0, 'errors': 0, 'count': 0,
+                'compute_spills': 0, 'compute_stack': 0, 'spill_count': 0,
+            }
 
         print("=== FAUST files analysis ===")
         print(f"File pattern: {args.file_pattern}")
@@ -197,7 +237,8 @@ and displays a comparative analysis results matrix.
                 total_analyses += 1
 
                 status, result = self.analyze_file(
-                    dsp_file, config_idx, faust_params, args.show_warnings
+                    dsp_file, config_idx, faust_params, args.show_warnings,
+                    with_spills=args.with_spills, dsp_class=args.dsp_class,
                 )
                 
                 self.results[basename][config_idx] = result
@@ -211,6 +252,11 @@ and displays a comparative analysis results matrix.
                 stats['errors'] += result['errors']
                 if 'total_issues' in result:
                     stats['issues'] += result['total_issues']
+                spills = result.get('spills')
+                if spills is not None:
+                    stats['compute_spills'] += spills.get('compute_spills', 0)
+                    stats['compute_stack']  += spills.get('compute_stack', 0)
+                    stats['spill_count']    += 1
                     
             print()
             
@@ -277,6 +323,12 @@ and displays a comparative analysis results matrix.
                 print(f"  - Total issues: {stats['issues']}")
                 avg_issues = stats['issues'] / stats['count']
                 print(f"  - Average issues per file: {avg_issues:.1f}")
+                if stats['spill_count'] > 0:
+                    avg_sp = stats['compute_spills'] / stats['spill_count']
+                    avg_st = stats['compute_stack']  / stats['spill_count']
+                    print(f"  - Total compute_spills : {stats['compute_spills']}")
+                    print(f"  - Mean  compute_spills : {avg_sp:.2f}")
+                    print(f"  - Mean  compute_stack  : {avg_st:.0f}")
             else:
                 print(f"  - No successful analyses")
             print()

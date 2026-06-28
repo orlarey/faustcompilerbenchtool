@@ -1,0 +1,202 @@
+#!/bin/bash
+
+# fcspilltool — extract LLVM register-allocator metrics from compiling
+# a Faust-generated C++ file, focused on the DSP compute() loop.
+#
+# Uses clang's -fsave-optimization-record (works with any clang —
+# release builds included; no need for an asserts-enabled clang).
+# Parses the resulting YAML to extract spill+reload copies and stack
+# frame size.
+#
+# Crucially, results are filtered to the DSP audio loop. The full
+# translation unit also includes the plotarch harness, the STL string
+# machinery, etc., whose spills dwarf those of the DSP itself
+# (typically 90+ vs 3) and would mask the signal of fusion
+# experiments. Use the `--all` flag to get the unfiltered totals.
+#
+# Output format (key: value, one per line):
+#
+#   compute_spills: N    # virtual register copies in mydsp::compute()
+#   compute_cost:   C    # LLVM's estimate of their cycle cost
+#   compute_stack:  B    # stack frame bytes of compute()
+#   all_spills:     T    # whole translation unit incl. STL/harness
+#   all_stack:      A
+#   total:          N    # alias of compute_spills (primary metric)
+#
+# Requires clang. Refuses gcc with a clear message.
+
+set -e
+
+CXX=${CXX:-clang++}
+SHARE=/usr/local/share/fctool
+MODE=compute          # 'compute' (default) | 'all'
+CLASS=mydsp           # the Faust-generated DSP class (-cn changes it)
+
+usage() {
+    cat >&2 <<EOF
+Usage: fcspilltool [--class NAME] [--all] <cppfile>
+
+Options:
+  --class NAME   DSP class name to filter on (default: mydsp, matches
+                 the Faust default; set this if you used -cn).
+  --all          Report only the unfiltered totals (no DSP filter).
+EOF
+}
+
+# ----------------------------------------------------------------------
+# CLI
+# ----------------------------------------------------------------------
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --class)  CLASS=$2; shift 2 ;;
+        --all)    MODE=all; shift ;;
+        -h|--help) usage; exit 0 ;;
+        -*)       echo "fcspilltool: unknown option '$1'" >&2; usage; exit 1 ;;
+        *)        break ;;
+    esac
+done
+
+if [ $# -ne 1 ]; then
+    usage
+    exit 1
+fi
+
+# ----------------------------------------------------------------------
+# Clang gate
+# ----------------------------------------------------------------------
+
+if ! "$CXX" --version 2>/dev/null | grep -qi 'clang'; then
+    cat >&2 <<EOF
+fcspilltool: $CXX does not appear to be clang.
+
+This tool relies on clang's '-fsave-optimization-record' to extract
+register-allocator information. GCC has no comparable mechanism in a
+portable YAML format.
+
+To use fcspilltool, set CXX to a clang-based compiler:
+
+    CXX=clang++ fcspilltool foo.cpp
+EOF
+    exit 2
+fi
+
+# ----------------------------------------------------------------------
+# Wrap and compile
+# ----------------------------------------------------------------------
+
+NAME=${1%.cpp}
+TMPDIR_RUN=$(mktemp -d -t fcspill.XXXXXX)
+trap 'rm -rf "$TMPDIR_RUN" "$NAME.tmp.cpp"' EXIT
+
+# Same wrap as fcasmtool / fcbenchtool: plotarch header/footer template.
+cat $SHARE/plotarch_header.cpp  > $NAME.tmp.cpp
+cat $1                         >> $NAME.tmp.cpp
+cat $SHARE/plotarch_footer.cpp >> $NAME.tmp.cpp
+
+RECORD="$TMPDIR_RUN/record.yaml"
+
+set +e
+"$CXX" -O3 -ffast-math -march=native -fbracket-depth=1024 \
+        -c -o /dev/null \
+        -fsave-optimization-record \
+        -foptimization-record-file="$RECORD" \
+        "$NAME.tmp.cpp" 2> "$TMPDIR_RUN/diag.txt"
+RC=$?
+set -e
+
+if [ $RC -ne 0 ]; then
+    cat "$TMPDIR_RUN/diag.txt" >&2
+    exit $RC
+fi
+
+if [ ! -s "$RECORD" ]; then
+    echo "fcspilltool: optimization record empty or missing ($RECORD)" >&2
+    exit 3
+fi
+
+# ----------------------------------------------------------------------
+# Parse the YAML record
+# ----------------------------------------------------------------------
+# Record shape:
+#
+#   --- !Missed
+#   Pass:            regalloc
+#   Name:            SpillReloadCopies          (function-level)
+#                 or LoopSpillReloadCopies      (loop-level subset)
+#   Function:        _ZN5mydsp7computeEiPPfS1_  (Itanium-mangled)
+#   ...
+#   Args:
+#     - NumVRCopies:     '3'
+#     - String:          ' virtual registers copies '
+#     - TotalCopiesCost: '6.000000e+01'
+#     ...
+#   ...
+#
+# Function names are mangled. We identify compute() via the substring
+# "<len><CLASS><len>computeE" (Itanium ABI: length-prefixed segments,
+# E ends the nested-name qualifier). For Faust's default class "mydsp"
+# this gives "5mydsp7computeE", which is highly specific.
+
+CLASS_LEN=${#CLASS}
+COMPUTE_PATTERN="${CLASS_LEN}${CLASS}7computeE"
+
+AWK_SCRIPT="$TMPDIR_RUN/parse.awk"
+cat > "$AWK_SCRIPT" <<'AWK_EOF'
+BEGIN { compute_pat = COMPUTE_PAT }
+
+function value(line) {
+    gsub(/[[:space:]'\'']/, "", line)
+    sub(/^.*:/, "", line)
+    return line
+}
+
+/^--- !/ {
+    in_rec=1; pass=""; name=""; fn=""
+    numvr=0; cost=0; stackb=0
+    next
+}
+
+in_rec && /^Pass:/             { pass = $2 }
+in_rec && /^Name:/             { name = $2 }
+in_rec && /^Function:/         { fn   = $2 }
+in_rec && /NumVRCopies:/       { numvr  = value($0) + 0 }
+in_rec && /TotalCopiesCost:/   { cost   = value($0) + 0 }
+in_rec && /NumStackBytes:/     { stackb = value($0) + 0 }
+
+/^\.\.\./ {
+    if (in_rec) {
+        is_compute = (index(fn, compute_pat) > 0)
+
+        if (pass == "regalloc" && name == "SpillReloadCopies") {
+            all_spills += numvr
+            all_cost   += cost
+            if (is_compute) {
+                compute_spills += numvr
+                compute_cost   += cost
+            }
+        }
+        if (pass == "prologepilog" && name == "StackSize") {
+            all_stack += stackb
+            if (is_compute) compute_stack += stackb
+        }
+        in_rec = 0
+    }
+}
+
+END {
+    printf "compute_spills: %d\n", compute_spills + 0
+    printf "compute_cost:   %d\n", compute_cost + 0
+    printf "compute_stack:  %d\n", compute_stack + 0
+    printf "all_spills:     %d\n", all_spills + 0
+    printf "all_stack:      %d\n", all_stack + 0
+    printf "total:          %d\n", compute_spills + 0
+}
+AWK_EOF
+
+if [ "$MODE" = all ]; then
+    awk -v COMPUTE_PAT="$COMPUTE_PATTERN" -f "$AWK_SCRIPT" "$RECORD" | \
+        grep -E '^(all_|total)'
+else
+    awk -v COMPUTE_PAT="$COMPUTE_PATTERN" -f "$AWK_SCRIPT" "$RECORD"
+fi
