@@ -17,9 +17,16 @@
 # Output format (key: value, one per line):
 #
 #   compute_spills:      N  # VR copies at function level in compute()
-#   compute_loop_spills: L  # VR copies inside inner loops of compute()
-#                           #   — purer signal of hot-path pressure,
-#                           #   independent of orchestration noise
+#   compute_outer_spills:O  # VR copies charged to the outer `vindex`
+#                           #   orchestration loop of -vec mode (0 in
+#                           #   scalar mode, which has no such loop)
+#   compute_inner_spills:I  # VR copies charged to the inner
+#                           #   vectorizable loops — the hot path
+#   compute_inner_max:   M  # worst single inner loop. THE number that
+#                           #   answers "does any one loop overflow the
+#                           #   register bank?"
+#   compute_inner_count: K  # how many inner loop records contributed
+#   compute_loop_spills: L  # O + I (kept for backwards compatibility)
 #   compute_cost:        C  # LLVM's estimate of their cycle cost
 #   compute_stack:       B  # stack frame bytes of compute() — direct
 #                           #   proxy for intermediate-vector materialisation
@@ -35,11 +42,23 @@
 # *around* spill/reload activity. As a proxy it scales with real
 # pressure, but absolute numbers are not directly interpretable.
 #
-# It also scales with function SIZE: comparing compute() between
-# scalar and -vec modes is misleading because -vec inlines many
-# small loops into one big compute(), inflating the absolute count
-# even when per-loop pressure is fine. For mode-to-mode comparison
-# prefer `compute_loop_spills` (hot path only) and `compute_stack`
+# BEWARE OF SUMS. `compute_loop_spills` and `compute_inner_spills`
+# are sums over loop records, so they scale with the NUMBER of loops,
+# not with per-loop pressure. A -vec program with 200 inner loops
+# spilling 2 copies each reports 400 — which says nothing about any
+# loop being under pressure. To answer "does a loop overflow the
+# register bank?", read `compute_inner_max`, not the sums.
+#
+# Measured on the Faust example suite (clang 22), the outer `vindex`
+# loop alone accounts for 26–100 % of loop-level spill copies, while
+# `compute_inner_max` stays in the 0–10 range for most programs. The
+# pressure lives in the orchestration of intermediate vectors, not in
+# the vectorizable loops themselves.
+#
+# `compute_spills` also scales with function SIZE: comparing compute()
+# between scalar and -vec modes is misleading because -vec inlines
+# many small loops into one big compute(). For mode-to-mode comparison
+# prefer `compute_inner_max` (per-loop pressure) and `compute_stack`
 # (direct byte count of local materialisations).
 #
 # Requires clang. Refuses gcc with a clear message.
@@ -115,6 +134,13 @@ cat $SHARE/plotarch_footer.cpp >> $NAME.tmp.cpp
 
 RECORD="$TMPDIR_RUN/record.yaml"
 
+# Line of the outer orchestration loop, if any. Faust's -vec mode emits
+# exactly one `for (vindex = 0; vindex <= (count - N); ...)` wrapping all
+# the vectorizable loops; scalar mode has none, in which case OUTER_LINE
+# stays 0 and every loop record counts as inner.
+OUTER_LINE=$(grep -n 'for (vindex' "$NAME.tmp.cpp" | head -1 | cut -d: -f1)
+OUTER_LINE=${OUTER_LINE:-0}
+
 set +e
 "$CXX" -O3 -ffast-math -march=native -fbracket-depth=1024 \
         -c -o /dev/null \
@@ -162,7 +188,7 @@ COMPUTE_PATTERN="${CLASS_LEN}${CLASS}7computeE"
 
 AWK_SCRIPT="$TMPDIR_RUN/parse.awk"
 cat > "$AWK_SCRIPT" <<'AWK_EOF'
-BEGIN { compute_pat = COMPUTE_PAT }
+BEGIN { compute_pat = COMPUTE_PAT; outer_line = OUTER_LINE + 0 }
 
 function value(line) {
     gsub(/[[:space:]'\'']/, "", line)
@@ -171,7 +197,7 @@ function value(line) {
 }
 
 /^--- !/ {
-    in_rec=1; pass=""; name=""; fn=""
+    in_rec=1; pass=""; name=""; fn=""; line=0
     numvr=0; cost=0; stackb=0
     next
 }
@@ -179,6 +205,12 @@ function value(line) {
 in_rec && /^Pass:/             { pass = $2 }
 in_rec && /^Name:/             { name = $2 }
 in_rec && /^Function:/         { fn   = $2 }
+in_rec && /^DebugLoc:/ {
+    l = $0
+    sub(/.*Line:[[:space:]]*/, "", l)
+    sub(/,.*/, "", l)
+    line = l + 0
+}
 in_rec && /NumVRCopies:/       { numvr  = value($0) + 0 }
 in_rec && /TotalCopiesCost:/   { cost   = value($0) + 0 }
 in_rec && /NumStackBytes:/     { stackb = value($0) + 0 }
@@ -195,8 +227,19 @@ in_rec && /NumStackBytes:/     { stackb = value($0) + 0 }
                 compute_cost   += cost
             }
         }
-        if (pass == "regalloc" && name == "LoopSpillReloadCopies") {
-            if (is_compute) compute_loop_spills += numvr
+        if (pass == "regalloc" && name == "LoopSpillReloadCopies" && is_compute) {
+            compute_loop_spills += numvr
+            # The outer `vindex` loop is the orchestrator: it holds the
+            # pointers to every intermediate vector. Charging it to the
+            # same bucket as the inner vectorizable loops would conflate
+            # orchestration pressure with hot-path pressure.
+            if (outer_line > 0 && line == outer_line) {
+                compute_outer_spills += numvr
+            } else {
+                compute_inner_spills += numvr
+                compute_inner_count++
+                if (numvr > compute_inner_max) compute_inner_max = numvr
+            }
         }
         if (pass == "prologepilog" && name == "StackSize") {
             all_stack += stackb
@@ -207,19 +250,24 @@ in_rec && /NumStackBytes:/     { stackb = value($0) + 0 }
 }
 
 END {
-    printf "compute_spills:      %d\n", compute_spills + 0
-    printf "compute_loop_spills: %d\n", compute_loop_spills + 0
-    printf "compute_cost:        %d\n", compute_cost + 0
-    printf "compute_stack:       %d\n", compute_stack + 0
-    printf "all_spills:          %d\n", all_spills + 0
-    printf "all_stack:           %d\n", all_stack + 0
-    printf "total:               %d\n", compute_spills + 0
+    printf "compute_spills:       %d\n", compute_spills + 0
+    printf "compute_outer_spills: %d\n", compute_outer_spills + 0
+    printf "compute_inner_spills: %d\n", compute_inner_spills + 0
+    printf "compute_inner_max:    %d\n", compute_inner_max + 0
+    printf "compute_inner_count:  %d\n", compute_inner_count + 0
+    printf "compute_loop_spills:  %d\n", compute_loop_spills + 0
+    printf "compute_cost:         %d\n", compute_cost + 0
+    printf "compute_stack:        %d\n", compute_stack + 0
+    printf "all_spills:           %d\n", all_spills + 0
+    printf "all_stack:            %d\n", all_stack + 0
+    printf "total:                %d\n", compute_spills + 0
 }
 AWK_EOF
 
 if [ "$MODE" = all ]; then
-    awk -v COMPUTE_PAT="$COMPUTE_PATTERN" -f "$AWK_SCRIPT" "$RECORD" | \
-        grep -E '^(all_[a-z]+|total):'
+    awk -v COMPUTE_PAT="$COMPUTE_PATTERN" -v OUTER_LINE="$OUTER_LINE" \
+        -f "$AWK_SCRIPT" "$RECORD" | grep -E '^(all_[a-z]+|total):'
 else
-    awk -v COMPUTE_PAT="$COMPUTE_PATTERN" -f "$AWK_SCRIPT" "$RECORD"
+    awk -v COMPUTE_PAT="$COMPUTE_PATTERN" -v OUTER_LINE="$OUTER_LINE" \
+        -f "$AWK_SCRIPT" "$RECORD"
 fi
