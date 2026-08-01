@@ -17,9 +17,11 @@
 # Output format (key: value, one per line):
 #
 #   compute_spills:      N  # VR copies at function level in compute()
-#   compute_outer_spills:O  # VR copies charged to the outer `vindex`
-#                           #   orchestration loop of -vec mode (0 in
-#                           #   scalar mode, which has no such loop)
+#   compute_outer_spills:O  # VR copies charged to the outer
+#                           #   orchestration loop — `vindex` in -vec
+#                           #   mode, the `index += 32` block loop in
+#                           #   ocpp (0 only in plain scalar cpp, which
+#                           #   has neither)
 #   compute_inner_spills:I  # VR copies charged to the inner
 #                           #   vectorizable loops — the hot path
 #   compute_inner_max:   M  # worst single inner loop. THE number that
@@ -67,17 +69,22 @@ set -e
 
 CXX=${CXX:-clang++}
 SHARE=/usr/local/share/fctool
-MODE=compute          # 'compute' (default) | 'all'
+MODE=compute          # 'compute' (default) | 'all' | 'perloop'
 CLASS=mydsp           # the Faust-generated DSP class (-cn changes it)
 
 usage() {
     cat >&2 <<EOF
-Usage: fcspilltool [--class NAME] [--all] <cppfile>
+Usage: fcspilltool [--class NAME] [--all | --per-loop] <cppfile>
 
 Options:
   --class NAME   DSP class name to filter on (default: mydsp, matches
                  the Faust default; set this if you used -cn).
   --all          Report only the unfiltered totals (no DSP filter).
+  --per-loop     Instead of aggregating, emit one TSV row per compute()
+                 loop record: line (in the ORIGINAL cpp file), kind
+                 (outer|inner), spills (NumVRCopies), cost. Lets a
+                 caller join measured pressure back to per-loop source
+                 annotations (e.g. Faust -ls '// loop:' comments).
 EOF
 }
 
@@ -89,6 +96,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --class)  CLASS=$2; shift 2 ;;
         --all)    MODE=all; shift ;;
+        --per-loop) MODE=perloop; shift ;;
         -h|--help) usage; exit 0 ;;
         -*)       echo "fcspilltool: unknown option '$1'" >&2; usage; exit 1 ;;
         *)        break ;;
@@ -134,12 +142,29 @@ cat $SHARE/plotarch_footer.cpp >> $NAME.tmp.cpp
 
 RECORD="$TMPDIR_RUN/record.yaml"
 
-# Line of the outer orchestration loop, if any. Faust's -vec mode emits
-# exactly one `for (vindex = 0; vindex <= (count - N); ...)` wrapping all
-# the vectorizable loops; scalar mode has none, in which case OUTER_LINE
-# stays 0 and every loop record counts as inner.
-OUTER_LINE=$(grep -n 'for (vindex' "$NAME.tmp.cpp" | head -1 | cut -d: -f1)
-OUTER_LINE=${OUTER_LINE:-0}
+# Lines of the outer orchestration loops, if any. Faust emits one such
+# loop wrapping the actual compute loops, and its shape depends on the
+# backend:
+#
+#   -vec mode : for (vindex = 0; vindex <= (count - N); vindex += N)
+#   ocpp mode : for (int index = 0; index < fullcount; index += 32)
+#
+# Both hold the pointers to every intermediate buffer, so they carry
+# orchestration pressure rather than hot-path pressure and must not be
+# charged to the inner bucket. Missing the ocpp form is not a rounding
+# error: on a 9-tile program the block loop alone reports 219 copies
+# against 26 for the worst inner loop, so it would swamp
+# compute_inner_max entirely.
+#
+# Plain scalar `cpp` has neither form, in which case OUTER_LINES stays
+# empty and every loop record counts as inner.
+OUTER_LINES=$(grep -nE 'for \(vindex|for \(int index = 0; index < fullcount' \
+                   "$NAME.tmp.cpp" | cut -d: -f1 | paste -sd, -)
+OUTER_LINES=${OUTER_LINES:-}
+
+# Offset to translate wrapped-file lines back to the original cpp
+# (the plotarch header is prepended verbatim above the user file).
+HDRLINES=$(wc -l < "$SHARE/plotarch_header.cpp" | tr -d ' ')
 
 set +e
 "$CXX" -O3 -ffast-math -march=native -fbracket-depth=1024 \
@@ -188,7 +213,11 @@ COMPUTE_PATTERN="${CLASS_LEN}${CLASS}7computeE"
 
 AWK_SCRIPT="$TMPDIR_RUN/parse.awk"
 cat > "$AWK_SCRIPT" <<'AWK_EOF'
-BEGIN { compute_pat = COMPUTE_PAT; outer_line = OUTER_LINE + 0 }
+BEGIN {
+    compute_pat = COMPUTE_PAT
+    n_outer = split(OUTER_LINES, _ol, ",")
+    for (k = 1; k <= n_outer; k++) if (_ol[k] != "") outer[_ol[k] + 0] = 1
+}
 
 function value(line) {
     gsub(/[[:space:]'\'']/, "", line)
@@ -228,12 +257,16 @@ in_rec && /NumStackBytes:/     { stackb = value($0) + 0 }
             }
         }
         if (pass == "regalloc" && name == "LoopSpillReloadCopies" && is_compute) {
+            if (PERLOOP) {
+                printf "%d\t%s\t%d\t%d\n", line - HDRLINES,
+                       ((line + 0) in outer) ? "outer" : "inner", numvr, cost
+            }
             compute_loop_spills += numvr
-            # The outer `vindex` loop is the orchestrator: it holds the
-            # pointers to every intermediate vector. Charging it to the
-            # same bucket as the inner vectorizable loops would conflate
+            # The outer loop is the orchestrator: it holds the pointers
+            # to every intermediate buffer. Charging it to the same
+            # bucket as the inner compute loops would conflate
             # orchestration pressure with hot-path pressure.
-            if (outer_line > 0 && line == outer_line) {
+            if ((line + 0) in outer) {
                 compute_outer_spills += numvr
             } else {
                 compute_inner_spills += numvr
@@ -250,6 +283,7 @@ in_rec && /NumStackBytes:/     { stackb = value($0) + 0 }
 }
 
 END {
+    if (PERLOOP) exit
     printf "compute_spills:       %d\n", compute_spills + 0
     printf "compute_outer_spills: %d\n", compute_outer_spills + 0
     printf "compute_inner_spills: %d\n", compute_inner_spills + 0
@@ -265,9 +299,16 @@ END {
 AWK_EOF
 
 if [ "$MODE" = all ]; then
-    awk -v COMPUTE_PAT="$COMPUTE_PATTERN" -v OUTER_LINE="$OUTER_LINE" \
+    awk -v COMPUTE_PAT="$COMPUTE_PATTERN" -v OUTER_LINES="$OUTER_LINES" \
+        -v PERLOOP=0 -v HDRLINES="$HDRLINES" \
         -f "$AWK_SCRIPT" "$RECORD" | grep -E '^(all_[a-z]+|total):'
+elif [ "$MODE" = perloop ]; then
+    printf 'line\tkind\tspills\tcost\n'
+    awk -v COMPUTE_PAT="$COMPUTE_PATTERN" -v OUTER_LINES="$OUTER_LINES" \
+        -v PERLOOP=1 -v HDRLINES="$HDRLINES" \
+        -f "$AWK_SCRIPT" "$RECORD" | sort -n
 else
-    awk -v COMPUTE_PAT="$COMPUTE_PATTERN" -v OUTER_LINE="$OUTER_LINE" \
+    awk -v COMPUTE_PAT="$COMPUTE_PATTERN" -v OUTER_LINES="$OUTER_LINES" \
+        -v PERLOOP=0 -v HDRLINES="$HDRLINES" \
         -f "$AWK_SCRIPT" "$RECORD"
 fi
