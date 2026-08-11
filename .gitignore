@@ -1,0 +1,40 @@
+# Artefacts produced by the tools in this repo.
+#
+# Note on binaries: fcbenchtool/fcplottool name their output after the
+# source with no extension by default (foo.cpp -> foo), which cannot be
+# globbed without also matching the tools themselves (fcbenchtool,
+# multifaust, ...). Pass an explicit extension — `fcbenchtool foo.cpp
+# .bench` — so the output is covered by the rules below.
+
+# wrapper intermediates and compiled benchmarks
+*.tmp.cpp
+*.bench
+*.db
+*.db.cpp
+
+# fcasmtool / fcplottool / LLVM dumps
+*.s
+*.ir
+*.o
+*.dSYM/
+
+# fcmultibench reports (README convention: foo.bench.json)
+*.bench.json
+
+# fcoptimize / fcbenchgraph / fcspillgraph generated reports
+*_opt_*.json
+*_opt_*.png
+*_sensitivity_*.json
+*_sensitivity_*.txt
+*_sensitivity_*.png
+benchmark_*.png
+spills_*.png
+
+# Faust-generated C++ dropped next to the .dsp. The only C++ that
+# belongs in this repo is the architecture templates, kept below.
+*.cpp
+!*_header.cpp
+!*_footer.cpp
+
+# local experiment scratch, not part of the toolkit
+matrix/
