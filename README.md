@@ -6,6 +6,8 @@
 
 - Faust compiler available on `PATH`
 - A C++ toolchain (`clang++` is used by default; override with `CXX`)
+- `fcspilltool` and `fcspillgraph.py` require **clang** specifically (they rely on
+  `-fsave-optimization-record`); they refuse gcc with an explicit message
 - Python 3 for the helper scripts; `matplotlib` is optional for plotting
 - Write access to `/usr/local/bin` and `/usr/local/share` when installing system-wide
 
@@ -38,8 +40,14 @@ Assuming you have compiled `foo.dsp` into `foo.cpp`, the following tools are ava
 9. **`fcanalyze.py`**: A Python script to analyze multiple DSP files with different FAUST configurations using static analysis to detect warnings and errors.
 
 10. **`fcoptimize.py`**: An automatic optimization tool that searches for the best Faust scalar compilation options for a given DSP file.
+
 11. **`fcmultibench foo.cpp`**: Compiles with `fcbenchtool`, runs `n` consecutive measurements, and reports statistics (`min/max/mean/median/p95/stddev`).
 
+12. **`fcspilltool foo.cpp`**: Extracts LLVM register-allocator metrics (spill copies, stack frame size) for the DSP `compute()` method.
+
+13. **`fcspillgraph.py`**: A Python script to measure and compare register spills across multiple DSP files and FAUST configurations, with graph generation.
+
+14. **`multifaust "<options>" <srcdir> <dstdir>`**: Compiles every `*.dsp` of a directory with the same Faust options and collects the resulting `*.cpp` in another directory.
 
 ---
 
@@ -51,7 +59,7 @@ The tools can be installed with the following command:
 sudo ./install.sh
 ```
 
-- **Binaries**: Installed in `/usr/local/bin` (including convenience symlinks `fcbenchgraph`, `fcanalyze`, `fcoptimize`).
+- **Binaries**: Installed in `/usr/local/bin` (including convenience symlinks `fcbenchgraph`, `fcanalyze`, `fcoptimize`, `fcspillgraph`).
 - **Dependencies**: Stored in `/usr/local/share/fctool` (headers/footers used by the wrappers).
 - Set `CXX` if you want a compiler other than `clang++` for all wrappers.
 
@@ -90,7 +98,16 @@ The primary tool, `fcbenchtool`, is used to benchmark the performance of C++ imp
    The code is compiled with the following options:
    - `-O3` (high optimization)
    - `-ffast-math` (faster floating-point computations)
+   - `-fbracket-depth=1024` (needed for deeply nested Faust-generated expressions)
    - `-march=native` (architecture-specific optimizations)
+
+   Both groups can be overridden through environment variables:
+   - `FCBENCH_CXXFLAGS` replaces `-O3 -ffast-math -fbracket-depth=1024`
+   - `FCBENCH_ARCH_FLAGS` replaces `-march=native` (set it to the empty string to
+     drop architecture flags entirely)
+
+   On arm64/aarch64, if the compiler rejects `-march=native`, `fcbenchtool`
+   automatically retries once with `-mcpu=native`.
 
 3. **Performance Measurement**:  
    The resulting binary measures the time (in milliseconds) to process 1 second of sound (44100 samples). The benchmark iterates until the minimal result remains stable over at least 1000 iterations. This iteration count can be customized.
@@ -116,14 +133,14 @@ You can specify a custom compiler using the `CXX` environment variable and defin
 ```bash
 faust foo.dsp -o foo.cpp
 CXX=clang++-19 fcbenchtool foo.cpp .cl19
-sudo ./foo.cl19
+./foo.cl19
 ```
 
 ### Practical use cases
 
 - Compare the impact of Faust flags: build `foo_vec.cpp` with `-vec`, `foo_scalar.cpp` without, then benchmark both binaries.
 - Validate performance regressions: run `fcbenchtool` on the same source before/after a code change and archive the printed timings.
-- CPU feature investigations: set `CXX="clang++ -march=skylake"` to force a specific target and see the effect on throughput.
+- CPU feature investigations: set `FCBENCH_ARCH_FLAGS="-march=skylake"` to force a specific target and see the effect on throughput.
 
 ### `fcmultibench`
 
@@ -238,15 +255,44 @@ gdb ./foo.db
 Explore various Faust compilation options to observe their impact on the generated C++ code.
 
 ```bash
-fcexplorer.py -mcd "0 2 4 8" -vec "" foo.dsp...
+fcexplorer.py -mcd "0 2 4 8" -vec "" foo.dsp
 ```
 
-will generate the 8 corresponding C++ files. The generated files will be named `foo_mcd0.cpp`, `foo_mcd0_vec.cpp`, `foo_mcd2.cpp`, etc. In the example `-vec ""` indicates an option that can be present or not, without additional arguments.
+will generate the 8 corresponding C++ files. The generated files will be named `foo_mcd_0.cpp`, `foo_mcd_0_vec.cpp`, `foo_mcd_2.cpp`, etc. — the suffix is built as `<option>_<value>` for options taking an argument, and `<option>` alone for flags. In the example `-vec ""` indicates an option that can be present or not, without additional arguments.
 
 Common recipes:
 - Delay tuning sweep: `fcexplorer.py -mcd "0 4 8 12" -mdd "512 1024 2048" myalgo.dsp`
 - Vector vs scalar: `fcexplorer.py -vec "" myalgo.dsp` then benchmark the produced files with `fcbenchtool`.
 
+
+### `multifaust`
+
+Compile a whole directory of `.dsp` files with one fixed set of Faust options, and
+collect the generated C++ in a separate directory. Useful to prepare a corpus for
+`fcbenchtool`/`fcspilltool`, or to keep one directory of C++ per compilation strategy
+and diff them.
+
+```bash
+multifaust "<faust options>" <srcdir> <dstdir>
+```
+
+The options are a **single** argument, word-split on spaces; pass `""` to compile with
+the Faust defaults. `<dstdir>` is created if needed. Each `<srcdir>/foo.dsp` becomes
+`<dstdir>/foo.cpp`.
+
+```bash
+multifaust "-lang ocpp" dsp cppfiles
+multifaust "-lang cpp -vec -vs 32" dsp cpp_vec
+multifaust "" dsp cpp_default
+```
+
+A file that fails to compile does not stop the run: the others are still compiled, the
+failures are listed at the end, and the exit status is 1 (no truncated `.cpp` is left
+behind). Set `FAUST` to point at a specific Faust binary:
+
+```bash
+FAUST=/opt/faust-dev/bin/faust multifaust "-lang ocpp" dsp cpp_dev
+```
 
 ### `fcbenchgraph.py`
 
@@ -360,6 +406,12 @@ fcanalyze.py <file_pattern> <faust_config1> [faust_config2] ... [OPTIONS]
 - **file_pattern**: Glob pattern for `.dsp` files to analyze (e.g., `"*.dsp"`, `"tests/**/*.dsp"`)
 - **faust_config**: One or more FAUST parameter sets to test (e.g., `"-lang cpp"`, `"-lang cpp -vec"`)
 
+#### Options
+
+- `-w`, `--show-warnings`: Display the detailed warnings and issues found during analysis
+- `--with-spills`: Also run `fcspilltool` on each cell to report `compute_spills`/`compute_stack` (costs one extra compilation per cell)
+- `--class NAME`: DSP class name used by the `--with-spills` filter (default: `mydsp`; set it if you compiled with `-cn`)
+
 #### Examples
 
 1. **Basic analysis with single configuration**:
@@ -391,7 +443,7 @@ The script generates console output including:
    - `✓ CLEAN`: No issues found
    - `XW/YE`: X warnings and Y errors found
    - `FAUST_ERR`: FAUST compilation failed
-   - `ANALYSIS_ERR`: Static analysis failed
+   - `COMPILE_ERR`: Static analysis failed to compile the generated C++
 
 3. **Configuration details** and statistics per configuration
 4. **Global statistics** including success rates
@@ -433,7 +485,7 @@ For each DSP file and configuration combination:
 The tool systematically explores these scalar-mode options focused on **performance** (using `-single` precision only, as `-double` and `-quad` would slow down computations):
 
 **Delay optimizations (especially important for ocpp):**
-- `-mcd` (max copy delay): 0, 2, 4, 6, 8, 9, 12, 16, 20 (10 not supported with ocpp)
+- `-mcd` (max copy delay): 0, 2, 4, 6, 8, 12, 16, 20, plus 9 for `cpp` and 10 for `ocpp`
 - `-udd` (use dense delay): 0, 1
 - `-mcl` (max copy loop): 2, 4, 8, 16 (ocpp only, fixed at 4 for cpp)
 - `-mdd` (max dense delay): 256, 512, 1024, 2048, 4096 (ocpp only, fixed at 1024 for cpp)
@@ -620,10 +672,10 @@ Max trials: 100
 Testing baseline configuration: -lang ocpp
   Baseline: 12.345ms
 
-[1/100] Testing: -lang ocpp -double -mcd 4 -dlt 512 -ftz 2
+[1/100] Testing: -lang ocpp -mcd 4 -mdd 512 -mca 8 -irt 4
   Result: 10.234ms ✓ NEW BEST! (-17.1% vs baseline)
 
-[2/100] Testing: -lang ocpp -single -mcd 8 -mdd 2048 -cm
+[2/100] Testing: -lang ocpp -mcd 8 -mdd 2048 -mdy 80 -exp10
   Result: 9.876ms ✓ NEW BEST! (-20.0% vs baseline)
 
 ...
@@ -631,10 +683,10 @@ Testing baseline configuration: -lang ocpp
 === TOP 10 CONFIGURATIONS ===
 
 #1: 8.234ms (-33.3% vs baseline)
-    -lang ocpp -double -mcd 8 -mdd 2048 -dlt 256 -ftz 2
+    -lang ocpp -mcd 8 -mdd 2048 -mcl 8 -fsr 44100 -ssel
 
 #2: 8.567ms (-30.6% vs baseline)
-    -lang ocpp -single -mcd 4 -mca 16 -ftz 2 -fm def
+    -lang ocpp -mcd 4 -mca 16 -mfs 512 -fls 8 -mapp
 
 ...
 
@@ -642,7 +694,7 @@ Testing baseline configuration: -lang ocpp
 BEST CONFIGURATION:
   Time: 8.234ms
   Speedup vs baseline: 33.3%
-  Command: faust -lang ocpp -double -mcd 8 -mdd 2048 -dlt 256 -ftz 2 <file.dsp> -o <file.cpp>
+  Command: faust -lang ocpp -mcd 8 -mdd 2048 -mcl 8 -fsr 44100 -ssel <file.dsp> -o <file.cpp>
 ======================================================================
 ```
 
@@ -661,6 +713,110 @@ BEST CONFIGURATION:
 - Save results to JSON for later comparison or analysis
 - Use adaptive strategy for deep optimization (200+ trials)
 
+### `fcspilltool`
+
+**fcspilltool** extracts LLVM register-allocator metrics from the compilation of a Faust-generated C++ file, focused on the DSP `compute()` method. It is the tool of choice when investigating whether a new code-generation strategy (loop fusion, vectorization, etc.) puts the register bank under pressure.
+
+It relies on clang's `-fsave-optimization-record`, so it works with any stock clang — no asserts-enabled build required. **It refuses gcc**, which has no comparable YAML mechanism.
+
+#### Usage
+
+```bash
+fcspilltool [--class NAME] [--all] <cppfile>
+```
+
+#### Options
+
+- `--class NAME`: DSP class name to filter `compute()` on (default: `mydsp`, the Faust default; set it if you compiled with `-cn`)
+- `--all`: Report only the unfiltered whole-translation-unit totals (no DSP filter)
+
+#### Why filtering matters
+
+The translation unit also contains the `plotarch` harness and the STL string machinery, whose spills dwarf those of the DSP itself (typically 90+ vs 3) and would completely mask the signal of a fusion experiment. By default `fcspilltool` reports only what is charged to `compute()`.
+
+#### Reported metrics
+
+Output is `key: value`, one per line:
+
+| Key | Meaning |
+| --- | --- |
+| `compute_spills` | virtual-register copies at function level in `compute()` |
+| `compute_outer_spills` | copies charged to the outer orchestration loop — `vindex` in `-vec` mode, the `index += 32` block loop in `ocpp` (0 only in plain scalar `cpp`, which has neither) |
+| `compute_inner_spills` | copies charged to the inner vectorizable loops — the hot path |
+| `compute_inner_max` | worst single inner loop |
+| `compute_inner_count` | how many inner loop records contributed |
+| `compute_loop_spills` | `compute_outer_spills + compute_inner_spills` (kept for backwards compatibility) |
+| `compute_cost` | LLVM's estimate of their cycle cost |
+| `compute_stack` | stack frame bytes of `compute()` — a direct proxy for intermediate-vector materialisation |
+| `all_spills`, `all_stack` | whole translation unit, harness and STL included |
+| `total` | alias of `compute_spills` |
+
+#### How to read these numbers — important
+
+`compute_spills` is the function-level `NumVRCopies` that LLVM emits for the spill/reload subsystem. It is **not** a direct count of stack accesses; it counts virtual-register `COPY` instructions inserted *around* spill/reload activity. As a proxy it scales with real pressure, but absolute values are not directly interpretable.
+
+**Beware of the sums.** `compute_loop_spills` and `compute_inner_spills` are sums over loop records, so they scale with the *number* of loops, not with per-loop pressure. A `-vec` program with 200 inner loops spilling 2 copies each reports 400 — which says nothing about any single loop being under pressure. To answer *"does a loop overflow the register bank?"*, read **`compute_inner_max`**, not the sums.
+
+Measured on the Faust example suite (clang 22), the outer `vindex` loop alone accounts for 26–100 % of loop-level spill copies, while `compute_inner_max` stays in the 0–10 range for most programs: the pressure lives in the orchestration of intermediate vectors, not in the vectorizable loops themselves.
+
+**`compute_inner_max` compares structurings, not sizes.** It answers "did this restructuring relieve the hot loop?", not "is this program slow?". On a corpus where every program emits a single fused inner loop, it carries no information beyond size. Where it earns its keep is the fusion/tiling comparison: on a 9×9 filter matrix, expressing the same 81 filters as nine 3×3 tiles takes the worst inner loop from 49 copies down to 26 and the program runs 1.83× faster — while every sum-based metric (`compute_spills`, `compute_inner_spills`, `compute_cost`) moves the *opposite* way, because there are now five times as many loop records to sum over.
+
+`compute_spills` also scales with function *size*, so comparing `compute()` between scalar and `-vec` modes is misleading — `-vec` inlines many small loops into one big `compute()`. For mode-to-mode comparison prefer `compute_inner_max` (per-loop pressure) and `compute_stack` (a direct byte count of local materialisations).
+
+#### Example
+
+```bash
+faust foo.dsp -o foo.cpp
+fcspilltool foo.cpp
+CXX=clang++-19 fcspilltool --class myfx foo.cpp   # if compiled with -cn myfx
+fcspilltool --all foo.cpp                          # unfiltered totals only
+```
+
+### `fcspillgraph.py`
+
+**fcspillgraph.py** measures register spills across multiple DSP files and FAUST configurations, using `fcspilltool` on each combination, and produces a comparison matrix plus an optional graph. It is to `fcspilltool` what `fcbenchgraph.py` is to `fcbenchtool`.
+
+#### Usage
+
+```bash
+fcspillgraph.py <file_pattern> <faust_config1> [faust_config2] ... [OPTIONS]
+# or simply fcspillgraph <pattern> ... after installation
+```
+
+#### Parameters
+
+- **file_pattern**: Glob pattern for `.dsp` files to analyse (e.g., `"*.dsp"`, `"tests/**/*.dsp"`)
+- **faust_config**: One or more FAUST parameter sets to compare (e.g., `"-lang cpp"`, `"-lang cpp -vec"`)
+
+#### Options
+
+- `--metric METRIC`: Which metric to plot and aggregate. One of `compute_spills` (default), `compute_cost`, `compute_stack`, `all_spills`, `all_stack`, `total`.
+- `--class NAME`: DSP class name to filter `compute()` on (default: `mydsp`)
+- `--no-graph`: Disable graph generation
+- `--graph-output FILE`: Custom graph filename (default: `spills_YYYYMMDD_HHMMSS.png`)
+
+Note that the per-loop metrics (`compute_inner_max`, `compute_outer_spills`, …) are printed by `fcspilltool` but are not yet selectable via `--metric`; use `fcspilltool` directly when you need them.
+
+#### Examples
+
+```bash
+# Baseline spill count for a whole test corpus
+fcspillgraph.py "tests/impulse-tests/dsp/*.dsp" "-lang cpp"
+
+# Does vectorization increase register pressure?
+fcspillgraph.py "*.dsp" "-lang cpp" "-lang cpp -vec"
+
+# Compare stack frame sizes instead of spill copies
+fcspillgraph.py "*.dsp" "-lang cpp" "-lang cpp -vec" --metric compute_stack
+```
+
+#### Prerequisites
+
+- FAUST compiler must be installed and accessible
+- `fcspilltool` must be installed (from this toolkit), and `CXX` must be clang
+- Python 3 with standard libraries
+- matplotlib (optional, for graph generation): `pip install matplotlib`
+
 ---
 
 ## Workflow Recipes
@@ -668,3 +824,4 @@ BEST CONFIGURATION:
 - **Validate a new Faust flag**: `fcexplorer.py` to generate variants → `fccomparetool` to ensure impulse responses stay identical → `fcbenchtool` to see if the change speeds up or slows down.
 - **Guard against regressions**: run `fcanalyze.py` with your standard configs to keep warnings/errors at zero, then `fcbenchgraph.py` to watch for performance drops across the whole corpus.
 - **Deep-dive a problematic DSP**: capture the impulse response with `fcplottool`, open a debug build with `fcdebugtool` in `gdb`, and inspect hot loops in `foo.s` produced by `fcasmtool`.
+- **Diagnose a slowdown as register pressure**: when `fcbenchtool` shows a regression, run `fcspilltool` on both variants and compare `compute_inner_max` and `compute_stack`; scale it to a whole corpus with `fcspillgraph.py`.
