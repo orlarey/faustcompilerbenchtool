@@ -1,0 +1,127 @@
+#!/bin/bash
+
+# multifaust — compile every *.dsp of a source directory with the same
+# set of Faust options, and collect the resulting *.cpp files in a
+# destination directory.
+#
+#   multifaust "<faust options>" <srcdir> <dstdir>
+#
+# Example:
+#
+#   multifaust "-lang ocpp" dsp cppfiles
+#
+# produces cppfiles/foo.cpp for every dsp/foo.dsp. The options string is
+# a single argument, word-split on spaces, so it may be empty ("") to
+# compile with the Faust defaults.
+#
+# Files are processed in sorted order. A failing file does not stop the
+# run: every other file is still compiled, the failures are listed at
+# the end, and the exit status is 1.
+
+set -u
+
+FAUST=${FAUST:-faust}
+
+usage() {
+    cat >&2 <<EOF
+Usage: multifaust "<faust options>" <srcdir> <dstdir>
+
+Compiles every *.dsp of <srcdir> with the given Faust options and writes
+the resulting *.cpp into <dstdir> (created if needed).
+
+Example:
+  multifaust "-lang ocpp" dsp cppfiles
+
+Set FAUST to use a specific Faust binary (default: faust).
+EOF
+}
+
+# ----------------------------------------------------------------------
+# CLI
+# ----------------------------------------------------------------------
+
+case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
+esac
+
+if [ $# -ne 3 ]; then
+    usage
+    exit 1
+fi
+
+OPTS_STR=$1
+SRCDIR=${2%/}
+DSTDIR=${3%/}
+
+if [ ! -d "$SRCDIR" ]; then
+    echo "multifaust: source directory not found: $SRCDIR" >&2
+    exit 1
+fi
+
+if ! command -v "$FAUST" >/dev/null 2>&1; then
+    echo "multifaust: faust compiler not found: $FAUST" >&2
+    exit 1
+fi
+
+# Split the option string into words. Intentional: the whole point of
+# passing "-lang ocpp -mcd 8" as one argument is that it expands to
+# several arguments here.
+read -ra OPTS <<< "$OPTS_STR"
+
+# ----------------------------------------------------------------------
+# Collect the sources
+# ----------------------------------------------------------------------
+
+shopt -s nullglob
+SOURCES=("$SRCDIR"/*.dsp)
+shopt -u nullglob
+
+if [ ${#SOURCES[@]} -eq 0 ]; then
+    echo "multifaust: no .dsp file in $SRCDIR" >&2
+    exit 1
+fi
+
+IFS=$'\n' SOURCES=($(printf '%s\n' "${SOURCES[@]}" | sort)); unset IFS
+
+mkdir -p "$DSTDIR" || exit 1
+
+# ----------------------------------------------------------------------
+# Compile
+# ----------------------------------------------------------------------
+
+TOTAL=${#SOURCES[@]}
+COUNT=0
+FAILED=()
+
+for src in "${SOURCES[@]}"; do
+    COUNT=$((COUNT + 1))
+    base=$(basename "$src" .dsp)
+    dst="$DSTDIR/$base.cpp"
+
+    printf '[%d/%d] %s -> %s\n' "$COUNT" "$TOTAL" "$src" "$dst"
+
+    # ${OPTS[@]+...} guards against an empty option string: under
+    # 'set -u', bash 3.2 treats "${OPTS[@]}" on an empty array as unbound.
+    if ! "$FAUST" ${OPTS[@]+"${OPTS[@]}"} "$src" -o "$dst"; then
+        echo "  ✗ faust failed on $src" >&2
+        FAILED+=("$src")
+        rm -f "$dst"
+    fi
+done
+
+# ----------------------------------------------------------------------
+# Report
+# ----------------------------------------------------------------------
+
+OK=$((TOTAL - ${#FAILED[@]}))
+echo "multifaust: $OK/$TOTAL compiled into $DSTDIR"
+
+if [ ${#FAILED[@]} -gt 0 ]; then
+    echo "multifaust: ${#FAILED[@]} failure(s):" >&2
+    for f in "${FAILED[@]}"; do
+        echo "  $f" >&2
+    done
+    exit 1
+fi
+
+exit 0

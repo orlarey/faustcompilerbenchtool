@@ -14,7 +14,7 @@ if [ $# -lt 1 ] || [ $# -gt 2 ]; then
 fi
 
 NAME=${1%.cpp}
-EXT=$2
+EXT=${2:-}
 
 # build the source file to compile
 cat $SHARE/bencharch_header.cpp > $NAME.tmp.cpp
