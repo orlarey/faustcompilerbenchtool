@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+"""fcautotool -- elect the best compilation options for one Faust program.
+
+Contract of this suite : faust is taken from the PATH (override with the
+FAUST environment variable). The jury of candidate option sets is built by
+CAPABILITY DETECTION : each candidate is admitted only if every one of its
+flags appears in `faust -h` of the compiler actually used -- the tool works
+with a stock faust (small jury) as with a development one (full jury), and
+degrades gracefully in between.
+
+Election protocol (the flash judge, flasharch_footer.cpp) : promotion spin,
+warmup, alternating rounds, podium re-race, and a power gate (no verdict on
+battery). Correctness gate : the winner must reproduce the default
+compilation's impulse response (compiled -double) at the onset criterion --
+what matters is the FIRST divergence ; a wrong-but-fast candidate is
+disqualified and the next in line inherits.
+
+Usage : fcautotool foo.dsp [-o foo.cpp] [--full] [--rounds N] [--keep]
+The emitted file is the BARE faust output of the elected candidate (no
+architecture wrapper) : reuse it, or re-run faust with the printed options
+and your own architecture.
+"""
+
+import argparse
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+FAUST = os.environ.get("FAUST") or shutil.which("faust") or "faust"
+CXX = os.environ.get("CXX", "clang++")
+CXXFLAGS = os.environ.get("FCBENCH_CXXFLAGS", "-O3 -ffast-math -fbracket-depth=1024").split()
+ARCH_FLAGS = os.environ.get("FCBENCH_ARCH_FLAGS", "-march=native").split()
+FLASH_ENV = {"FLASH_REPS": "10", "FLASH_BLOCKS": "100", "FLASH_WARM": "120"}
+
+def share_dir():
+    here = os.path.dirname(os.path.abspath(__file__))
+    for d in (here, "/usr/local/share/fctool"):
+        if os.path.exists(os.path.join(d, "bencharch_header.cpp")) and \
+           os.path.exists(os.path.join(d, "flasharch_footer.cpp")):
+            return d
+    sys.exit("fcautotool: bencharch_header.cpp / flasharch_footer.cpp not found "
+             "(looked in the tool's directory and /usr/local/share/fctool)")
+
+# the candidate nomenclature (a superset of every compiler this tool may meet ;
+# capability detection prunes it to what the PATH faust actually supports)
+CAND = {
+    "df":    [],
+    "al":    ["-ss", "8"],
+    "h2":    ["-ss", "9", "-ls-R", "2", "-ls-U", "4"],
+    "h32":   ["-ss", "9", "-ls-R", "32", "-ls-U", "4"],
+    "cs2":   ["-ss", "11", "-ls-R", "32", "-ls-U", "4"],
+    "cs2b":  ["-ss", "12", "-ls-R", "32", "-ls-U", "8"],
+    "fu":    ["-ls-fuse", "-ls-sched", "model"],
+    "ls":    ["-ls", "-ls-sched", "model"],
+    "t4":    ["-temp", "4"],
+    "t4fu":  ["-temp", "4", "-ls-fuse", "-ls-sched", "model"],
+    "t1fu":  ["-temp", "1", "-ls-fuse", "-ls-sched", "model"],
+    "fi":    ["-fir", "-iirt"],
+    "fib":   ["-fir", "-iirt", "-lsum"],
+    "fifu":  ["-fir", "-iirt", "-ls-fuse", "-ls-sched", "model"],
+    "fibfu": ["-fir", "-iirt", "-lsum", "-ls-fuse", "-ls-sched", "model"],
+    "fibmx": ["-fir", "-iirt", "-lsum", "-mxr", "-ls-fuse", "-ls-sched", "model"],
+    "lb":    ["-lsum"],
+    "lz":    ["-lazyselect"],
+    "lzh":   ["-lazyselect", "-ss", "9", "-ls-R", "32", "-ls-U", "4"],
+    "gq":    ["-gatequiv"],
+    "gqlz":  ["-gatequiv", "-lazyselect"],
+    "sn":    ["-selectn"],
+    "gqsn":  ["-gatequiv", "-selectn"],
+    "rp":    ["-rp"],
+}
+
+def supported_jury(workdir):
+    """Capability detection by PARSER TRUTH, not by help text : each candidate's
+    flag set is tried on a trivial program, and the compiler's own
+    'unrecognized option' warning decides. Help texts lag reality ; the
+    parser cannot."""
+    tiny = os.path.join(workdir, "fcauto-probe.dsp")
+    with open(tiny, "w") as f:
+        f.write("process = _;\n")
+    jury = {}
+    for name, flags in CAND.items():
+        try:
+            r = subprocess.run([FAUST, "-lang", "ocpp", *flags, tiny, "-o", os.devnull],
+                               capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if r.returncode == 0 and "unrecognized option" not in (r.stderr or ""):
+            jury[name] = flags
+    return jury
+
+def signature(dsp):
+    """Optional static probe (development compilers only) ; None if absent."""
+    r = subprocess.run([FAUST, "-lang", "ocpp", dsp, "-o", os.devnull],
+                       env=dict(os.environ, FAUST_SS_SIG="1"),
+                       capture_output=True, text=True)
+    m = re.search(r"SS_SIG ([^\n]*)", r.stderr or "")
+    if not m:
+        return None
+    return {k: int(v) for k, v in re.findall(r"(\w+)=(\d+)", m.group(1))}
+
+def shortlist(sig, jury):
+    """The distilled layer-1 rules, intersected with what this faust supports."""
+    n, r, st = sig["nodes"], sig["recmii"], sig["nstreams"]
+    sel = sig.get("nselect", 0)
+    cand = ["df", "lb", "fu", "al", "fifu", "fibfu"]
+    if n < 200 or sig.get("nalu", 0) > 0.9 * n:
+        cand += ["fi"]
+    if r >= 80:
+        cand += ["t1fu", "t4fu"]
+    if st >= 20:
+        cand += ["t4fu"]
+    cand += ["h2"] if (r >= 40 or st >= 5) else ["h32"]
+    if st >= 8:
+        cand += ["rp"]
+    if n >= 700 or r >= 80:
+        cand += ["cs2"]
+    if n >= 200:
+        cand += ["cs2b"]
+    if sel >= 8:
+        cand += ["lz", "gqlz", "t4", "sn", "gqsn"]
+    return [c for c in dict.fromkeys(cand) if c in jury]
+
+def build(dsp, name, flags, workdir, share, double=False):
+    """faust -> bare body ; header+body+footer -> binary. (body, binary) or Nones."""
+    body = os.path.join(workdir, f"{name}{'-d' if double else ''}.body.cpp")
+    fopts = ["-double"] if double else []
+    r = subprocess.run([FAUST, "-lang", "ocpp", *fopts, *flags, dsp, "-o", body],
+                       capture_output=True, text=True, timeout=120)
+    if r.returncode != 0 or not os.path.getsize(body):
+        return None, None
+    src = os.path.join(workdir, f"{name}{'-d' if double else ''}.cpp")
+    with open(src, "w") as out:
+        for piece in (os.path.join(share, "bencharch_header.cpp"), body,
+                      os.path.join(share, "flasharch_footer.cpp")):
+            out.write(open(piece).read())
+    binp = src[:-4]
+    extra = ["-DFAUSTFLOAT=double"] if double else []
+    r = subprocess.run([CXX, *CXXFLAGS, *ARCH_FLAGS, *extra, src, "-o", binp],
+                       capture_output=True, timeout=300)
+    if r.returncode != 0:
+        return body, None
+    return body, binp
+
+def run_once(binp):
+    r = subprocess.run([binp], env=dict(os.environ, **FLASH_ENV),
+                       capture_output=True, text=True)
+    m = re.match(r"([0-9.]+)", r.stdout or "")
+    return float(m.group(1)) if m else None
+
+def impulse(binp, n=60000):
+    r = subprocess.run([binp], env=dict(os.environ, FLASH_IR=str(n)),
+                       capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 and (r.stdout or "").strip() else None
+
+NUMRE = re.compile(r"-?\d+\.?\d*(?:[eE][+-]?\d+)?|nan|inf")
+
+def ir_equivalent(a, b, onset_tol=1e-11):
+    """Onset criterion : only the FIRST divergence is judged. Ulp-class
+    (< onset_tol relative) = legal floating-point reassociation ; a finite
+    divergence from the start = miscompilation ; newborn nan/inf = rejected."""
+    if a == b:
+        return True
+    la, lb = a.splitlines(), b.splitlines()
+    if len(la) != len(lb):
+        return False
+    for x, y in zip(la, lb):
+        if x == y:
+            continue
+        na, nb = NUMRE.findall(x), NUMRE.findall(y)
+        if len(na) != len(nb):
+            return False
+        for u, v in zip(na, nb):
+            if "nan" in u or "nan" in v or "inf" in u or "inf" in v:
+                return u == v
+            fu, fv = float(u), float(v)
+            d = abs(fu - fv)
+            if d == 0.0:
+                continue
+            return d <= onset_tol * max(abs(fu), abs(fv), 1e-30)
+    return True
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("dsp")
+    ap.add_argument("-o", "--output", help="write the elected candidate's bare faust output here")
+    ap.add_argument("--rounds", type=int, default=2)
+    ap.add_argument("--full", action="store_true",
+                    help="skip the static shortlist, race every supported candidate")
+    ap.add_argument("--keep", action="store_true", help="keep the working directory")
+    a = ap.parse_args()
+
+    t0 = time.time()
+    share = share_dir()
+    with tempfile.TemporaryDirectory(prefix="fcauto-probe-") as probedir:
+        jury = supported_jury(probedir)
+    print(f"fcautotool: faust = {FAUST}")
+    print(f"fcautotool: jury = {len(jury)}/{len(CAND)} candidates supported: {sorted(jury)}")
+    if len(jury) <= 1:
+        print("fcautotool: this faust supports none of the optional candidates; "
+              "only the default will be measured")
+
+    cands = sorted(jury)
+    if not a.full:
+        sig = signature(a.dsp)
+        if sig is not None:
+            cands = shortlist(sig, jury)
+            print(f"fcautotool: shortlist by signature: {cands}")
+        else:
+            print("fcautotool: no signature probe on this faust, racing the full supported jury")
+
+    # power gate : frequency scaling on battery biases even co-measured
+    # ratios ; refuse to bench rather than record a biased verdict
+    try:
+        batt = subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True).stdout
+        if "Battery Power" in batt and not os.environ.get("FCAUTO_ALLOW_BATTERY"):
+            sys.exit("REFUSED: on battery power (pmset). Plug in before electing "
+                     "(FCAUTO_ALLOW_BATTERY=1 to override, results non-canonical).")
+    except FileNotFoundError:
+        pass
+
+    workdir = tempfile.mkdtemp(prefix="fcauto-")
+    built = {}
+    for name in cands:
+        body, binp = build(a.dsp, name, jury[name], workdir, share)
+        if binp:
+            built[name] = (body, binp)
+        else:
+            print(f"  {name}: build failed, discarded")
+    if not built:
+        sys.exit("fcautotool: no candidate built")
+
+    time.sleep(4)  # thermal pause after the -O3 build burst
+    times = {name: [] for name in built}
+    for _ in range(a.rounds):
+        for name, (_, binp) in built.items():
+            t = run_once(binp)
+            if t is not None:
+                times[name].append(t)
+    # podium re-race : min-of-2 is fragile to spikes and only the head counts
+    ranked = sorted((n for n in built if times[n]), key=lambda n: min(times[n]))
+    lead = min(times[ranked[0]]) if ranked else 0.0
+    for name in [n for n in ranked if min(times[n]) <= 2.0 * lead][:8]:
+        for _ in range(4):
+            t = run_once(built[name][1])
+            if t is not None:
+                times[name].append(t)
+    for name in sorted(built, key=lambda n: min(times[n]) if times[n] else 1e30):
+        if times[name]:
+            print(f"  {name:<6} {min(times[name]):8.4f} ns  ({' '.join(jury[name]) or 'default'})")
+
+    # correctness gate, walked down the ranking
+    ranked = sorted((n for n in built if times[n]), key=lambda n: min(times[n]))
+    _, refbin = build(a.dsp, "gate-ref", [], workdir, share, double=True)
+    ref_ir = impulse(refbin) if refbin else None
+    best = None
+    for name in ranked:
+        if name == "df" or ref_ir is None:
+            best = name
+            break
+        _, gbin = build(a.dsp, f"gate-{name}", jury[name], workdir, share, double=True)
+        el_ir = impulse(gbin) if gbin else None
+        if el_ir is not None and ir_equivalent(ref_ir, el_ir):
+            best = name
+            break
+        print(f"  {name}: DISQUALIFIED (impulse response differs from the default)")
+    if best is None:
+        best = "df" if "df" in built else ranked[0]
+
+    print(f"fcautotool: winner {best} ({min(times[best]):.4f} ns/frame) -- options: "
+          f"{' '.join(jury[best]) or '(default)'}  [{time.time() - t0:.1f} s]")
+    if a.output:
+        shutil.copyfile(built[best][0], a.output)
+        print(f"fcautotool: bare faust output written to {a.output}")
+    if a.keep:
+        print(f"fcautotool: working directory kept: {workdir}")
+    else:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+if __name__ == "__main__":
+    main()

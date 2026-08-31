@@ -49,6 +49,8 @@ Assuming you have compiled `foo.dsp` into `foo.cpp`, the following tools are ava
 
 14. **`multifaust "<options>" <srcdir> <dstdir>`**: Compiles every `*.dsp` of a directory with the same Faust options and collects the resulting `*.cpp` in another directory.
 
+15. **`fcautotool foo.dsp [-o foo.cpp]`**: Elects the best compilation option set for one program from a jury of known candidates (scheduling strategies, kernel recognition, loop splitting/fusion, …). The jury is built by **capability detection** — each candidate is admitted only if the `faust` on the `PATH` actually accepts its flags (parser truth, not help text) — so the tool works with a stock compiler as with a development one. Candidates are raced under a flash-bench protocol (promotion spin, warmup, alternating rounds, podium re-race, no verdict on battery power), and the winner must reproduce the default compilation's impulse response (compiled `-double`, first-divergence criterion) or it is disqualified. Prints the ranked table and the winning option line; `-o` writes the winner's bare faust output. `--full` races every supported candidate instead of the signature-based shortlist. Complements `fcoptimize.py`, which searches the standard scalar option space.
+
 ---
 
 ## Installation
