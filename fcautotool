@@ -74,6 +74,21 @@ CAND = {
     "rp":    ["-rp"],
 }
 
+# reference candidates from the current C++ backend : always in the race, so
+# a single run answers "which backend wins on THIS machine" as well as
+# "which options". Judged like the others ; gated against their own
+# backend's default (legal reassociations differ across backends).
+LANGCAND = {
+    "cpp":    ("cpp", []),
+    "cppvec": ("cpp", ["-vec"]),
+}
+
+def cand_lang(name):
+    return LANGCAND[name][0] if name in LANGCAND else "ocpp"
+
+def cand_flags(name, jury):
+    return LANGCAND[name][1] if name in LANGCAND else jury[name]
+
 def supported_jury(workdir):
     """Capability detection by PARSER TRUTH, not by help text : each candidate's
     flag set is tried on a trivial program, and the compiler's own
@@ -125,12 +140,12 @@ def shortlist(sig, jury):
         cand += ["lz", "gqlz", "t4", "sn", "gqsn"]
     return [c for c in dict.fromkeys(cand) if c in jury]
 
-def build(dsp, name, flags, workdir, share, double=False):
+def build(dsp, name, flags, workdir, share, double=False, lang="ocpp"):
     """faust -> bare body ; header+body+footer -> binary.
     Returns (body, binary, why) -- why is the failure's first stderr line."""
     body = os.path.join(workdir, f"{name}{'-d' if double else ''}.body.cpp")
     fopts = ["-double"] if double else []
-    r = subprocess.run([FAUST, "-lang", "ocpp", *fopts, *flags, dsp, "-o", body],
+    r = subprocess.run([FAUST, "-lang", lang, *fopts, *flags, dsp, "-o", body],
                        capture_output=True, text=True, timeout=120)
     if r.returncode != 0 or not os.path.getsize(body):
         why = next((l for l in (r.stderr or "").splitlines() if l.strip()), "faust: empty output")
@@ -216,6 +231,7 @@ def main():
             print(f"fcautotool: shortlist by signature: {cands}")
         else:
             print("fcautotool: no signature probe on this faust, racing the full supported jury")
+    cands += [n for n in LANGCAND if n not in cands]  # the backend reference points
 
     # power gate : frequency scaling on battery biases even co-measured
     # ratios ; refuse to bench rather than record a biased verdict
@@ -230,7 +246,8 @@ def main():
     workdir = tempfile.mkdtemp(prefix="fcauto-")
     built = {}
     for name in cands:
-        body, binp, why = build(a.dsp, name, jury[name], workdir, share)
+        body, binp, why = build(a.dsp, name, cand_flags(name, jury), workdir, share,
+                                lang=cand_lang(name))
         if binp:
             built[name] = (body, binp)
         else:
@@ -254,30 +271,44 @@ def main():
             t = run_once(built[name][1])
             if t is not None:
                 times[name].append(t)
+    def label(name):
+        lang = cand_lang(name)
+        opts = " ".join(cand_flags(name, jury))
+        return (f"-lang {lang} {opts}".strip()) if (lang != "ocpp" or not opts) else opts
     for name in sorted(built, key=lambda n: min(times[n]) if times[n] else 1e30):
         if times[name]:
-            print(f"  {name:<6} {min(times[name]):8.4f} ns  ({' '.join(jury[name]) or 'default'})")
+            print(f"  {name:<6} {min(times[name]):8.4f} ns  ({label(name) or 'default'})")
 
-    # correctness gate, walked down the ranking
+    # correctness gate, walked down the ranking ; each candidate is gated
+    # against its OWN backend's default (legal reassociations differ across
+    # backends), computed lazily per language
     ranked = sorted((n for n in built if times[n]), key=lambda n: min(times[n]))
-    _, refbin, _ = build(a.dsp, "gate-ref", [], workdir, share, double=True)
-    ref_ir = impulse(refbin) if refbin else None
+    refs = {}
+    def ref_ir_for(lang):
+        if lang not in refs:
+            _, refbin, _ = build(a.dsp, f"gate-ref-{lang}", [], workdir, share,
+                                 double=True, lang=lang)
+            refs[lang] = impulse(refbin) if refbin else None
+        return refs[lang]
     best = None
     for name in ranked:
-        if name == "df" or ref_ir is None:
-            best = name
+        lang = cand_lang(name)
+        ref_ir = ref_ir_for(lang)
+        if not cand_flags(name, jury) or ref_ir is None:
+            best = name  # a backend's default is its own reference
             break
-        _, gbin, _ = build(a.dsp, f"gate-{name}", jury[name], workdir, share, double=True)
+        _, gbin, _ = build(a.dsp, f"gate-{name}", cand_flags(name, jury), workdir, share,
+                           double=True, lang=lang)
         el_ir = impulse(gbin) if gbin else None
         if el_ir is not None and ir_equivalent(ref_ir, el_ir):
             best = name
             break
-        print(f"  {name}: DISQUALIFIED (impulse response differs from the default)")
+        print(f"  {name}: DISQUALIFIED (impulse response differs from its backend's default)")
     if best is None:
         best = "df" if "df" in built else ranked[0]
 
-    print(f"fcautotool: winner {best} ({min(times[best]):.4f} ns/frame) -- options: "
-          f"{' '.join(jury[best]) or '(default)'}  [{time.time() - t0:.1f} s]")
+    print(f"fcautotool: winner {best} ({min(times[best]):.4f} ns/frame) -- "
+          f"{label(best) or 'the default'}  [{time.time() - t0:.1f} s]")
     if a.output:
         shutil.copyfile(built[best][0], a.output)
         print(f"fcautotool: bare faust output written to {a.output}")
