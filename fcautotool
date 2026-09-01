@@ -272,12 +272,12 @@ def main():
             if t is not None:
                 times[name].append(t)
     def label(name):
-        lang = cand_lang(name)
+        # the backend is part of the option set : always spell it out
         opts = " ".join(cand_flags(name, jury))
-        return (f"-lang {lang} {opts}".strip()) if (lang != "ocpp" or not opts) else opts
+        return f"-lang {cand_lang(name)} {opts}".strip()
     for name in sorted(built, key=lambda n: min(times[n]) if times[n] else 1e30):
         if times[name]:
-            print(f"  {name:<6} {min(times[name]):8.4f} ns  ({label(name) or 'default'})")
+            print(f"  {name:<6} {min(times[name]):8.4f} ns  ({label(name)})")
 
     # correctness gate, walked down the ranking ; each candidate is gated
     # against its OWN backend's default (legal reassociations differ across
@@ -308,7 +308,7 @@ def main():
         best = "df" if "df" in built else ranked[0]
 
     print(f"fcautotool: winner {best} ({min(times[best]):.4f} ns/frame) -- "
-          f"{label(best) or 'the default'}  [{time.time() - t0:.1f} s]")
+          f"{label(best)}  [{time.time() - t0:.1f} s]")
     if a.output:
         shutil.copyfile(built[best][0], a.output)
         print(f"fcautotool: bare faust output written to {a.output}")
