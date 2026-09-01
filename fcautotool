@@ -86,8 +86,33 @@ LANGCAND = {
 def cand_lang(name):
     return LANGCAND[name][0] if name in LANGCAND else "ocpp"
 
+BK = {}  # optional per-program recipe from the fcgentool book: name -> (flags, env)
+
 def cand_flags(name, jury):
+    if name in BK:
+        return BK[name][0]
     return LANGCAND[name][1] if name in LANGCAND else jury[name]
+
+def cand_env(name):
+    return BK[name][1] if name in BK else {}
+
+def read_book(dsp):
+    """The fcgentool recipe book (./fcrecipes.tsv or FCRECIPES=...) : a
+    champion evolved for THIS program joins the race as candidate 'bk',
+    re-judged and correctness-gated like any other."""
+    path = os.environ.get("FCRECIPES", "fcrecipes.tsv")
+    base = os.path.basename(dsp)
+    try:
+        for l in open(path):
+            if l.startswith("#") or not l.strip():
+                continue
+            c = l.rstrip("\n").split("\t")
+            if len(c) >= 4 and c[0] == base:
+                env = dict(kv.split("=", 1) for kv in c[3].split() if "=" in kv)
+                return c[2].split(), env
+    except FileNotFoundError:
+        pass
+    return None
 
 def supported_jury(workdir):
     """Capability detection by PARSER TRUTH, not by help text : each candidate's
@@ -140,12 +165,13 @@ def shortlist(sig, jury):
         cand += ["lz", "gqlz", "t4", "sn", "gqsn"]
     return [c for c in dict.fromkeys(cand) if c in jury]
 
-def build(dsp, name, flags, workdir, share, double=False, lang="ocpp"):
+def build(dsp, name, flags, workdir, share, double=False, lang="ocpp", env=None):
     """faust -> bare body ; header+body+footer -> binary.
     Returns (body, binary, why) -- why is the failure's first stderr line."""
     body = os.path.join(workdir, f"{name}{'-d' if double else ''}.body.cpp")
     fopts = ["-double"] if double else []
     r = subprocess.run([FAUST, "-lang", lang, *fopts, *flags, dsp, "-o", body],
+                       env={**os.environ, **(env or {})},
                        capture_output=True, text=True, timeout=120)
     if r.returncode != 0 or not os.path.getsize(body):
         why = next((l for l in (r.stderr or "").splitlines() if l.strip()), "faust: empty output")
@@ -232,6 +258,12 @@ def main():
         else:
             print("fcautotool: no signature probe on this faust, racing the full supported jury")
     cands += [n for n in LANGCAND if n not in cands]  # the backend reference points
+    recipe = read_book(a.dsp)
+    if recipe is not None:
+        BK["bk"] = recipe
+        cands.append("bk")
+        print(f"fcautotool: book recipe joins the race (bk): "
+              f"{' '.join(recipe[0])} {recipe[1] or ''}")
 
     # power gate : frequency scaling on battery biases even co-measured
     # ratios ; refuse to bench rather than record a biased verdict
@@ -247,7 +279,7 @@ def main():
     built = {}
     for name in cands:
         body, binp, why = build(a.dsp, name, cand_flags(name, jury), workdir, share,
-                                lang=cand_lang(name))
+                                lang=cand_lang(name), env=cand_env(name))
         if binp:
             built[name] = (body, binp)
         else:
@@ -298,7 +330,7 @@ def main():
             best = name  # a backend's default is its own reference
             break
         _, gbin, _ = build(a.dsp, f"gate-{name}", cand_flags(name, jury), workdir, share,
-                           double=True, lang=lang)
+                           double=True, lang=lang, env=cand_env(name))
         el_ir = impulse(gbin) if gbin else None
         if el_ir is not None and ir_equivalent(ref_ir, el_ir):
             best = name

@@ -9,7 +9,7 @@ mkdir -p "$SHARE_DIR"
 
 # Copy files to installation directory
 
-cp fcbenchtool fcmultibench fcplottool fccomparetool fcanalyzetool fcdebugtool fcasmtool fcspilltool fcautotool multifaust fcexplorer.py fcbenchgraph.py fcanalyze.py fcoptimize.py fcspillgraph.py "$INSTALL_DIR"
+cp fcbenchtool fcmultibench fcplottool fccomparetool fcanalyzetool fcdebugtool fcasmtool fcspilltool fcautotool fcgentool multifaust fcexplorer.py fcbenchgraph.py fcanalyze.py fcoptimize.py fcspillgraph.py "$INSTALL_DIR"
 
 chmod 755 "$INSTALL_DIR/fcbenchtool"
 chmod 755 "$INSTALL_DIR/multifaust"
@@ -18,6 +18,7 @@ chmod 755 "$INSTALL_DIR/fcplottool"
 chmod 755 "$INSTALL_DIR/fccomparetool"
 chmod 755 "$INSTALL_DIR/fcanalyzetool"
 chmod 755 "$INSTALL_DIR/fcautotool"
+chmod 755 "$INSTALL_DIR/fcgentool"
 chmod 755 "$INSTALL_DIR/fcdebugtool"
 chmod 755 "$INSTALL_DIR/fcasmtool"
 chmod 755 "$INSTALL_DIR/fcspilltool"

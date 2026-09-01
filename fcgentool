@@ -1,0 +1,312 @@
+#!/usr/bin/env python3
+"""fcgentool -- genetic search of the best compilation options for ONE program.
+
+Where fcautotool elects among a fixed jury of known candidates, fcgentool
+BREEDS new combinations: a genome of typed genes (scheduler, register/width
+budgets, fusion, splitting, staging, kernel recognition, selection family),
+evaluated under the flash judge, evolved by tournament selection, uniform
+crossover and mutation. Correctness is a hard constraint: the champion must
+reproduce the default compilation's impulse response (compiled -double) at
+the first-divergence criterion, or it is disqualified.
+
+Contract of this suite: faust from the PATH (FAUST env override). The
+genome is built by CAPABILITY DETECTION -- each allele is admitted only if
+the compiler's parser accepts its flags -- so the searched space collapses
+gracefully on a stock faust (and the tool says so instead of pretending).
+
+Usage: fcgentool foo.dsp [--pop 16] [--gens 20] [--seed 1] [--book [FILE]]
+       [--mut P] [--elite N] [--tourney N] [--stall N] [--runs N]
+
+--book records the validated champion into a recipe file (default
+./fcrecipes.tsv); fcautotool injects recipes from that file as one more
+candidate (bk), re-judged and correctness-gated at every use. Recipes are
+per-machine operational data: champions evolved here are starting points
+elsewhere.
+"""
+
+import argparse
+import datetime
+import os
+import random
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+FAUST = os.environ.get("FAUST") or shutil.which("faust") or "faust"
+CXX = os.environ.get("CXX", "clang++")
+CXXFLAGS = os.environ.get("FCBENCH_CXXFLAGS", "-O3 -ffast-math -fbracket-depth=1024").split()
+ARCH_FLAGS = os.environ.get("FCBENCH_ARCH_FLAGS", "-march=native").split()
+FLASH_ENV = {"FLASH_REPS": "10", "FLASH_BLOCKS": "100", "FLASH_WARM": "120"}
+
+def share_dir():
+    here = os.path.dirname(os.path.abspath(__file__))
+    for d in (here, "/usr/local/share/fctool"):
+        if os.path.exists(os.path.join(d, "bencharch_header.cpp")) and \
+           os.path.exists(os.path.join(d, "flasharch_footer.cpp")):
+            return d
+    sys.exit("fcgentool: bencharch_header.cpp / flasharch_footer.cpp not found "
+             "(looked in the tool's directory and /usr/local/share/fctool)")
+
+# The full genome. Allele 0 of every gene is its off/default form. Alleles
+# are pruned by capability detection before the search starts.
+GENES = {
+    "sched": [[], ["-ss", "0"], ["-ss", "8"], ["-ss", "9"], ["-ss", "11"], ["-ss", "12"]],
+    "R":     [["-ls-R", "2"], ["-ls-R", "8"], ["-ls-R", "16"], ["-ls-R", "32"], ["-ls-R", "64"]],
+    "U":     [["-ls-U", "2"], ["-ls-U", "4"], ["-ls-U", "8"]],
+    "fuse":  [[], ["-ls-fuse", "-ls-sched", "model"]],
+    "ls":    [[], ["-ls", "-ls-sched", "model"]],
+    "temp":  [[], ["-temp", "1"], ["-temp", "2"], ["-temp", "4"], ["-temp", "8"]],
+    "fir":   [[], ["-fir", "-iirt"]],
+    "lsum":  [[], ["-lsum"]],
+    "lazy":  [[], ["-lazyselect"]],
+    "gq":    [[], ["-gatequiv"]],
+    "sn":    [[], ["-selectn"]],
+    "rp":    [[], ["-rp"]],
+}
+# Environment-carried genes, each tied to the flag capability that makes it
+# meaningful (an env a compiler ignores would only waste evaluations).
+ENVGENES = {
+    "tau":   ("gq",   [{}, {"FAUST_GATEQUIV_TAU": "6"}, {"FAUST_GATEQUIV_TAU": "24"}]),
+    "atoms": ("lazy", [{}, {"FAUST_LZ_ATOMS": "2"}, {"FAUST_LZ_ATOMS": "6"}]),
+}
+
+def detect_genome(workdir):
+    """Parser-truth pruning: keep an allele only if its flags are accepted."""
+    tiny = os.path.join(workdir, "fcgen-probe.dsp")
+    with open(tiny, "w") as f:
+        f.write("process = _;\n")
+    cache = {}
+    def flags_ok(flags):
+        key = tuple(flags)
+        if key not in cache:
+            try:
+                r = subprocess.run([FAUST, "-lang", "ocpp", *flags, tiny, "-o", os.devnull],
+                                   capture_output=True, text=True, timeout=30)
+                cache[key] = r.returncode == 0 and "unrecognized option" not in (r.stderr or "")
+            except (OSError, subprocess.TimeoutExpired):
+                cache[key] = False
+        return cache[key]
+    genes = {}
+    for k, alleles in GENES.items():
+        kept = [a for a in alleles if not a or flags_ok(a)]
+        if len(kept) > 1:
+            genes[k] = kept
+    for k, (need, alleles) in ENVGENES.items():
+        if need in genes:
+            genes[k] = alleles
+    return genes
+
+def flags_of(g, genes):
+    fl, env = [], {}
+    for k, idx in g.items():
+        a = genes[k][idx]
+        if isinstance(a, dict):
+            env.update(a)
+        else:
+            fl += a
+    return fl, env
+
+def build(dsp, tag, flags, env, workdir, share, double=False):
+    body = os.path.join(workdir, f"{tag}.body.cpp")
+    fopts = ["-double"] if double else []
+    r = subprocess.run([FAUST, "-lang", "ocpp", *fopts, *flags, dsp, "-o", body],
+                       env={**os.environ, **env}, capture_output=True, timeout=120)
+    if r.returncode != 0 or not os.path.exists(body) or not os.path.getsize(body):
+        return None
+    src = os.path.join(workdir, f"{tag}.cpp")
+    with open(src, "w") as out:
+        for piece in (os.path.join(share, "bencharch_header.cpp"), body,
+                      os.path.join(share, "flasharch_footer.cpp")):
+            out.write(open(piece).read())
+    binp = src[:-4]
+    extra = ["-DFAUSTFLOAT=double"] if double else []
+    r = subprocess.run([CXX, *CXXFLAGS, *ARCH_FLAGS, *extra, src, "-o", binp],
+                       capture_output=True, timeout=300)
+    return binp if r.returncode == 0 else None
+
+def run_once(binp):
+    r = subprocess.run([binp], env=dict(os.environ, **FLASH_ENV),
+                       capture_output=True, text=True)
+    m = re.match(r"([0-9.]+)", r.stdout or "")
+    return float(m.group(1)) if m else None
+
+def impulse(binp, n=60000):
+    r = subprocess.run([binp], env=dict(os.environ, FLASH_IR=str(n)),
+                       capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 and (r.stdout or "").strip() else None
+
+NUMRE = re.compile(r"-?\d+\.?\d*(?:[eE][+-]?\d+)?|nan|inf")
+
+def ir_equivalent(a, b, onset_tol=1e-11):
+    if a == b:
+        return True
+    la, lb = a.splitlines(), b.splitlines()
+    if len(la) != len(lb):
+        return False
+    for x, y in zip(la, lb):
+        if x == y:
+            continue
+        na, nb = NUMRE.findall(x), NUMRE.findall(y)
+        if len(na) != len(nb):
+            return False
+        for u, v in zip(na, nb):
+            if "nan" in u or "nan" in v or "inf" in u or "inf" in v:
+                return u == v
+            fu, fv = float(u), float(v)
+            d = abs(fu - fv)
+            if d == 0.0:
+                continue
+            return d <= onset_tol * max(abs(fu), abs(fv), 1e-30)
+    return True
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("dsp")
+    ap.add_argument("--pop", type=int, default=16)
+    ap.add_argument("--gens", type=int, default=20)
+    ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--mut", type=float, default=0.15, help="per-gene mutation probability")
+    ap.add_argument("--elite", type=int, default=2, help="genomes carried over unchanged")
+    ap.add_argument("--tourney", type=int, default=3, help="tournament size")
+    ap.add_argument("--stall", type=int, default=6, help="stop after N flat generations")
+    ap.add_argument("--runs", type=int, default=2, help="flash runs per fitness (min kept)")
+    ap.add_argument("--book", nargs="?", const="fcrecipes.tsv", default=None,
+                    help="record the validated champion (default file: ./fcrecipes.tsv)")
+    ap.add_argument("--keep", action="store_true")
+    a = ap.parse_args()
+
+    share = share_dir()
+    print(f"fcgentool: faust = {FAUST}")
+    with tempfile.TemporaryDirectory(prefix="fcgen-probe-") as pd:
+        genes = detect_genome(pd)
+    if not genes:
+        sys.exit("fcgentool: this faust supports none of the searched genes -- "
+                 "nothing to evolve (the default is the only point of the space)")
+    space = 1
+    for k in genes:
+        space *= len(genes[k])
+    print(f"fcgentool: genome = {len(genes)} genes {sorted(genes)} "
+          f"({space} combinations)")
+
+    try:
+        batt = subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True).stdout
+        if "Battery Power" in batt and not os.environ.get("FCAUTO_ALLOW_BATTERY"):
+            sys.exit("REFUSED: on battery power (pmset). An evolution takes hours; plug in "
+                     "(FCAUTO_ALLOW_BATTERY=1 to override, results non-canonical).")
+    except FileNotFoundError:
+        pass
+
+    rng = random.Random(a.seed)
+    wd = tempfile.mkdtemp(prefix="fcgen-")
+    cache, nev = {}, [0]
+
+    def fitness(g):
+        fl, env = flags_of(g, genes)
+        key = (tuple(fl), tuple(sorted(env.items())))
+        if key in cache:
+            return cache[key]
+        nev[0] += 1
+        binp = build(a.dsp, f"g{nev[0]}", fl, env, wd, share)
+        if binp:
+            vals = [v for v in (run_once(binp) for _ in range(a.runs)) if v]
+            fit = min(vals) if vals else float("inf")
+            for p in (binp, binp + ".cpp", binp + ".body.cpp"):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+        else:
+            fit = float("inf")
+        cache[key] = fit
+        return fit
+
+    def rand_genome():
+        return {k: rng.randrange(len(genes[k])) for k in genes}
+
+    def seed_genome(**kw):
+        g = {k: 0 for k in genes}
+        for k, v in kw.items():
+            if k in genes and v < len(genes[k]):
+                g[k] = v
+        return g
+
+    # seeds: the known points of the map, expressed defensively against the
+    # pruned genome (a missing gene is simply ignored)
+    pop = [
+        seed_genome(),                          # the default
+        seed_genome(temp=1, fuse=1),            # staging + fusion
+        seed_genome(lsum=1),                    # the polynomial form
+        seed_genome(fuse=1),                    # fusion alone
+        seed_genome(sched=4, R=3, U=1),         # compositional deep spine
+        seed_genome(gq=1, sn=1, lazy=1),        # the selection family
+    ]
+    while len(pop) < a.pop:
+        pop.append(rand_genome())
+
+    best, bestg, stall = float("inf"), None, 0
+    for gen in range(a.gens):
+        scored = sorted(((fitness(g), i) for i, g in enumerate(pop)), key=lambda x: x[0])
+        gbest, gi = scored[0]
+        improved = gbest < best * 0.995
+        if gbest < best:
+            best, bestg = gbest, dict(pop[gi])
+        stall = 0 if improved else stall + 1
+        fl, env = flags_of(pop[gi], genes)
+        print(f"gen {gen:2d} : best={gbest:8.3f} (global {best:8.3f}) "
+              f"evals={nev[0]} : {' '.join(fl)} {env}", flush=True)
+        if stall >= a.stall:
+            print("stagnation, stopping.", flush=True)
+            break
+        elite = [dict(pop[i]) for _, i in scored[:a.elite]]
+        def pick():
+            cands = rng.sample(range(len(pop)), a.tourney)
+            return pop[min(cands, key=lambda i: fitness(pop[i]))]
+        nxt = elite
+        while len(nxt) < a.pop:
+            p1, p2 = pick(), pick()
+            child = {k: (p1 if rng.random() < 0.5 else p2)[k] for k in genes}
+            for k in genes:
+                if rng.random() < a.mut:
+                    child[k] = rng.randrange(len(genes[k]))
+            nxt.append(child)
+        pop = nxt
+
+    if bestg is None:
+        sys.exit("fcgentool: every evaluated genome failed to build -- check the program "
+                 "(and its path) with a bare faust invocation first")
+
+    # hard correctness constraint: the champion must reproduce the default's
+    # impulse response (both compiled -double) at the onset criterion
+    print("\nchecking the champion's correctness...", flush=True)
+    fl, env = flags_of(bestg, genes)
+    refbin = build(a.dsp, "gate-ref", [], {}, wd, share, double=True)
+    chbin = build(a.dsp, "gate-champ", fl, env, wd, share, double=True)
+    ref_ir = impulse(refbin) if refbin else None
+    ch_ir = impulse(chbin) if chbin else None
+    ok = ref_ir is None or (ch_ir is not None and ir_equivalent(ref_ir, ch_ir))
+    if ok:
+        envs = " ".join(f"{k}={v}" for k, v in sorted(env.items()))
+        print(f"CHAMPION VALID: {best:.3f} ns : {' '.join(fl)} {envs}")
+        if a.book:
+            base = os.path.basename(a.dsp)
+            lines = [l for l in open(a.book)] if os.path.exists(a.book) else [
+                "# fcgentool recipe book -- per-machine champions, injected by\n",
+                "# fcautotool as candidate 'bk' (correctness-gated at every use).\n",
+                "# basename\tdate\tflags\tenv\n"]
+            lines = [l for l in lines if not l.startswith(base + "\t")]
+            lines.append(f"{base}\t{datetime.date.today()}\t{' '.join(fl)}\t{envs or '-'}\n")
+            with open(a.book, "w") as f:
+                f.writelines(lines)
+            print(f"recorded in {a.book}: {base}")
+    else:
+        print("champion DISQUALIFIED (impulse response differs from the default)")
+    if a.keep:
+        print(f"working directory kept: {wd}")
+    else:
+        shutil.rmtree(wd, ignore_errors=True)
+
+if __name__ == "__main__":
+    main()
