@@ -184,10 +184,15 @@ def build(dsp, name, flags, workdir, share, double=False, lang="ocpp", env=None)
     Returns (body, binary, why) -- why is the failure's first stderr line."""
     body = os.path.join(workdir, f"{name}{'-d' if double else ''}.body.cpp")
     fopts = ["-double"] if double else []
-    r = subprocess.run([FAUST, "-lang", lang, *fopts, *flags, "-I", os.path.dirname(os.path.abspath(dsp)) or ".", dsp, "-o", body],
-                       env={**os.environ, **(env or {})},
-                       capture_output=True, text=True, timeout=120)
-    if r.returncode != 0 or not os.path.getsize(body):
+    try:
+        r = subprocess.run([FAUST, "-lang", lang, *fopts, *flags, "-I", os.path.dirname(os.path.abspath(dsp)) or ".", dsp, "-o", body],
+                           env={**os.environ, **(env or {})},
+                           capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        # a candidate that does not compile in time is a failed candidate,
+        # not a crashed election (2dKirchhoffThinPlate's recipe on Linux)
+        return None, None, "faust: timeout (120 s)"
+    if r.returncode != 0 or not os.path.exists(body) or not os.path.getsize(body):
         why = next((l for l in (r.stderr or "").splitlines() if l.strip()), "faust: empty output")
         return None, None, f"faust: {why[:160]}"
     src = os.path.join(workdir, f"{name}{'-d' if double else ''}.cpp")
@@ -197,10 +202,13 @@ def build(dsp, name, flags, workdir, share, double=False, lang="ocpp", env=None)
             out.write(open(piece).read())
     binp = src[:-4]
     extra = ["-DFAUSTFLOAT=double"] if double else []
-    r = subprocess.run([CXX, *CXXFLAGS, *ARCH_FLAGS, *extra,
-                        "-I", os.path.dirname(os.path.abspath(dsp)) or ".",
-                        src, "-o", binp],
-                       capture_output=True, text=True, timeout=300)
+    try:
+        r = subprocess.run([CXX, *CXXFLAGS, *ARCH_FLAGS, *extra,
+                            "-I", os.path.dirname(os.path.abspath(dsp)) or ".",
+                            src, "-o", binp],
+                           capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        return body, None, f"{os.path.basename(CXX)}: timeout (300 s)"
     if r.returncode != 0:
         why = next((l for l in (r.stderr or "").splitlines() if "error" in l.lower()),
                    (r.stderr or "").strip().splitlines()[0] if (r.stderr or "").strip() else "?")
@@ -208,14 +216,20 @@ def build(dsp, name, flags, workdir, share, double=False, lang="ocpp", env=None)
     return body, binp, ""
 
 def run_once(binp):
-    r = subprocess.run([binp], env=dict(os.environ, **FLASH_ENV),
-                       capture_output=True, text=True)
+    try:
+        r = subprocess.run([binp], env=dict(os.environ, **FLASH_ENV),
+                           capture_output=True, text=True, timeout=900)
+    except subprocess.TimeoutExpired:
+        return None
     m = re.match(r"([0-9.]+)", r.stdout or "")
     return float(m.group(1)) if m else None
 
 def impulse(binp, n=60000):
-    r = subprocess.run([binp], env=dict(os.environ, FLASH_IR=str(n)),
-                       capture_output=True, text=True)
+    try:
+        r = subprocess.run([binp], env=dict(os.environ, FLASH_IR=str(n)),
+                           capture_output=True, text=True, timeout=900)
+    except subprocess.TimeoutExpired:
+        return None
     return r.stdout if r.returncode == 0 and (r.stdout or "").strip() else None
 
 NUMRE = re.compile(r"-?\d+\.?\d*(?:[eE][+-]?\d+)?|nan|inf")

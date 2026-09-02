@@ -124,8 +124,11 @@ def flags_of(g, genes):
 def build(dsp, tag, flags, env, workdir, share, double=False):
     body = os.path.join(workdir, f"{tag}.body.cpp")
     fopts = ["-double"] if double else []
-    r = subprocess.run([FAUST, "-lang", "ocpp", *fopts, *flags, "-I", os.path.dirname(os.path.abspath(dsp)) or ".", dsp, "-o", body],
-                       env={**os.environ, **env}, capture_output=True, timeout=120)
+    try:
+        r = subprocess.run([FAUST, "-lang", "ocpp", *fopts, *flags, "-I", os.path.dirname(os.path.abspath(dsp)) or ".", dsp, "-o", body],
+                           env={**os.environ, **env}, capture_output=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        return None  # a genome that does not compile in time fails, the run goes on
     if r.returncode != 0 or not os.path.exists(body) or not os.path.getsize(body):
         return None
     src = os.path.join(workdir, f"{tag}.cpp")
@@ -135,10 +138,13 @@ def build(dsp, tag, flags, env, workdir, share, double=False):
             out.write(open(piece).read())
     binp = src[:-4]
     extra = ["-DFAUSTFLOAT=double"] if double else []
-    r = subprocess.run([CXX, *CXXFLAGS, *ARCH_FLAGS, *extra,
-                        "-I", os.path.dirname(os.path.abspath(dsp)) or ".",
-                        src, "-o", binp],
-                       capture_output=True, timeout=300)
+    try:
+        r = subprocess.run([CXX, *CXXFLAGS, *ARCH_FLAGS, *extra,
+                            "-I", os.path.dirname(os.path.abspath(dsp)) or ".",
+                            src, "-o", binp],
+                           capture_output=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        return None
     return binp if r.returncode == 0 else None
 
 def run_once(binp):
