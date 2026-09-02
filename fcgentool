@@ -39,6 +39,18 @@ FAUST = os.environ.get("FAUST") or shutil.which("faust") or "faust"
 CXX = os.environ.get("CXX", "clang++")
 CXXFLAGS = os.environ.get("FCBENCH_CXXFLAGS", "-O3 -ffast-math -fbracket-depth=1024").split()
 ARCH_FLAGS = os.environ.get("FCBENCH_ARCH_FLAGS", "-march=native").split()
+
+def cxx_identity():
+    """the C++ judge, path and version (clang++ resolved by the PATH is not
+    necessarily the system compiler : MacPorts clang 22 against Apple clang
+    21, 25 % apart on the same source)"""
+    path = shutil.which(CXX) or CXX
+    try:
+        v = subprocess.run([CXX, "--version"], capture_output=True, text=True, timeout=30).stdout
+        v = (v.strip().splitlines() or ["?"])[0]
+    except Exception:
+        v = "?"
+    return f"{path} ({v})"
 FLASH_ENV = {"FLASH_REPS": "10", "FLASH_BLOCKS": "100", "FLASH_WARM": "120"}
 
 def share_dir():
@@ -200,6 +212,7 @@ def main():
 
     share = share_dir()
     print(f"fcgentool: faust = {FAUST}")
+    print(f"fcgentool: c++ = {cxx_identity()} {' '.join(CXXFLAGS + ARCH_FLAGS)}")
     with tempfile.TemporaryDirectory(prefix="fcgen-probe-") as pd:
         genes = detect_genome(pd)
     if not genes:

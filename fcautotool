@@ -36,6 +36,19 @@ CXXFLAGS = os.environ.get("FCBENCH_CXXFLAGS", "-O3 -ffast-math -fbracket-depth=1
 ARCH_FLAGS = os.environ.get("FCBENCH_ARCH_FLAGS", "-march=native").split()
 FLASH_ENV = {"FLASH_REPS": "10", "FLASH_BLOCKS": "100", "FLASH_WARM": "120"}
 
+def cxx_identity():
+    """the C++ judge, path and version : clang++ resolved by the PATH is not
+    necessarily the system compiler (MacPorts clang 22 against Apple clang
+    21 : 25 % apart on the same source) -- a figure without it is not a
+    measurement"""
+    path = shutil.which(CXX) or CXX
+    try:
+        v = subprocess.run([CXX, "--version"], capture_output=True, text=True, timeout=30).stdout
+        v = (v.strip().splitlines() or ["?"])[0]
+    except Exception:
+        v = "?"
+    return f"{path} ({v})"
+
 def share_dir():
     here = os.path.dirname(os.path.abspath(__file__))
     for d in (here, "/usr/local/share/fctool"):
@@ -267,6 +280,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="fcauto-probe-") as probedir:
         jury = supported_jury(probedir)
     print(f"fcautotool: faust = {FAUST}")
+    print(f"fcautotool: c++ = {cxx_identity()} {' '.join(CXXFLAGS + ARCH_FLAGS)}")
     print(f"fcautotool: jury = {len(jury)}/{len(CAND)} candidates supported: {sorted(jury)}")
     if len(jury) <= 1:
         print("fcautotool: this faust supports none of the optional candidates; "

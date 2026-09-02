@@ -10,9 +10,13 @@
 //                    n samples, prints them at full precision (17 significant
 //                    digits) -- one line per sample, one column per output --
 //                    plus, after each block, one line with every bargraph zone
-//                    (a dropped display is a wrong program too).
+//                    (a dropped display is a wrong program too). Every button
+//                    and checkbox is PRESSED during the probe (FLASH_PRESS=0
+//                    releases them) : an instrument without its gate renders
+//                    silence, and a silent reference accepts any candidate.
 // Knobs (environment) : FLASH_COUNT (512), FLASH_WARM (400), FLASH_REPS (30),
-// FLASH_BLOCKS (200), FLASH_SPIN_MS (200), FLASH_SCRUB (0 KB).
+// FLASH_BLOCKS (200), FLASH_SPIN_MS (200), FLASH_SCRUB (0 KB), FLASH_PRESS (1
+// in the probe, 0 in the bench).
 
 #include <cstdio>
 #include <cstring>
@@ -32,12 +36,13 @@ static int envInt(const char* name, int dflt)
 // The old backend passes the initial value as the THIRD argument.
 struct SetDefaultUI : public UI {
     std::vector<std::pair<const char*, FAUSTFLOAT*>> bargraphs;  // the display zones, for the correctness probe
+    FAUSTFLOAT press = 0;  // buttons and checkboxes : 1 = pressed (the probe), 0 = released (the bench)
     void openTabBox(const char*) override {}
     void openHorizontalBox(const char*) override {}
     void openVerticalBox(const char*) override {}
     void closeBox() override {}
-    void addButton(const char*, FAUSTFLOAT* z) override { *z = 0; }
-    void addCheckButton(const char*, FAUSTFLOAT* z) override { *z = 0; }
+    void addButton(const char*, FAUSTFLOAT* z) override { *z = press; }
+    void addCheckButton(const char*, FAUSTFLOAT* z) override { *z = press; }
     void addVerticalSlider(const char*, FAUSTFLOAT* z, FAUSTFLOAT init, FAUSTFLOAT, FAUSTFLOAT,
                            FAUSTFLOAT) override
     {
@@ -72,6 +77,7 @@ int main()
     FAUSTCLASS* d = new FAUSTCLASS();
     d->init(44100);
     SetDefaultUI ui;
+    ui.press = FAUSTFLOAT(envInt("FLASH_PRESS", irlen > 0 ? 1 : 0));
     d->buildUserInterface(&ui);
     int nins  = d->getNumInputs();
     int nouts = d->getNumOutputs();
