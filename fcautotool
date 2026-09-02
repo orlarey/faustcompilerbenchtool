@@ -135,7 +135,8 @@ def supported_jury(workdir):
 
 def signature(dsp):
     """Optional static probe (development compilers only) ; None if absent."""
-    r = subprocess.run([FAUST, "-lang", "ocpp", dsp, "-o", os.devnull],
+    r = subprocess.run([FAUST, "-lang", "ocpp", "-I",
+                        os.path.dirname(os.path.abspath(dsp)) or ".", dsp, "-o", os.devnull],
                        env=dict(os.environ, FAUST_SS_SIG="1"),
                        capture_output=True, text=True)
     m = re.search(r"SS_SIG ([^\n]*)", r.stderr or "")
@@ -170,7 +171,7 @@ def build(dsp, name, flags, workdir, share, double=False, lang="ocpp", env=None)
     Returns (body, binary, why) -- why is the failure's first stderr line."""
     body = os.path.join(workdir, f"{name}{'-d' if double else ''}.body.cpp")
     fopts = ["-double"] if double else []
-    r = subprocess.run([FAUST, "-lang", lang, *fopts, *flags, dsp, "-o", body],
+    r = subprocess.run([FAUST, "-lang", lang, *fopts, *flags, "-I", os.path.dirname(os.path.abspath(dsp)) or ".", dsp, "-o", body],
                        env={**os.environ, **(env or {})},
                        capture_output=True, text=True, timeout=120)
     if r.returncode != 0 or not os.path.getsize(body):
@@ -183,7 +184,9 @@ def build(dsp, name, flags, workdir, share, double=False, lang="ocpp", env=None)
             out.write(open(piece).read())
     binp = src[:-4]
     extra = ["-DFAUSTFLOAT=double"] if double else []
-    r = subprocess.run([CXX, *CXXFLAGS, *ARCH_FLAGS, *extra, src, "-o", binp],
+    r = subprocess.run([CXX, *CXXFLAGS, *ARCH_FLAGS, *extra,
+                        "-I", os.path.dirname(os.path.abspath(dsp)) or ".",
+                        src, "-o", binp],
                        capture_output=True, text=True, timeout=300)
     if r.returncode != 0:
         why = next((l for l in (r.stderr or "").splitlines() if "error" in l.lower()),

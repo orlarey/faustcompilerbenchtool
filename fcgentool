@@ -112,7 +112,7 @@ def flags_of(g, genes):
 def build(dsp, tag, flags, env, workdir, share, double=False):
     body = os.path.join(workdir, f"{tag}.body.cpp")
     fopts = ["-double"] if double else []
-    r = subprocess.run([FAUST, "-lang", "ocpp", *fopts, *flags, dsp, "-o", body],
+    r = subprocess.run([FAUST, "-lang", "ocpp", *fopts, *flags, "-I", os.path.dirname(os.path.abspath(dsp)) or ".", dsp, "-o", body],
                        env={**os.environ, **env}, capture_output=True, timeout=120)
     if r.returncode != 0 or not os.path.exists(body) or not os.path.getsize(body):
         return None
@@ -123,7 +123,9 @@ def build(dsp, tag, flags, env, workdir, share, double=False):
             out.write(open(piece).read())
     binp = src[:-4]
     extra = ["-DFAUSTFLOAT=double"] if double else []
-    r = subprocess.run([CXX, *CXXFLAGS, *ARCH_FLAGS, *extra, src, "-o", binp],
+    r = subprocess.run([CXX, *CXXFLAGS, *ARCH_FLAGS, *extra,
+                        "-I", os.path.dirname(os.path.abspath(dsp)) or ".",
+                        src, "-o", binp],
                        capture_output=True, timeout=300)
     return binp if r.returncode == 0 else None
 
