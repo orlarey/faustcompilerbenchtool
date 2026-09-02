@@ -210,12 +210,22 @@ NUMRE = re.compile(r"-?\d+\.?\d*(?:[eE][+-]?\d+)?|nan|inf")
 def ir_equivalent(a, b, onset_tol=1e-11):
     """Onset criterion : only the FIRST divergence is judged. Ulp-class
     (< onset_tol relative) = legal floating-point reassociation ; a finite
-    divergence from the start = miscompilation ; newborn nan/inf = rejected."""
+    divergence from the start = miscompilation ; newborn nan/inf = rejected.
+    The tolerance is relative to the SCALE of the reference signal (its
+    largest magnitude), never below the compared values' own : a residue
+    of 4e-16 against an exact 0 is two ulp of 1.0 left by a legal
+    reassociation (the filter algebra on bandFilter, lfBoost, lowShelf...),
+    and a purely value-relative rule would call it a miscompilation."""
     if a == b:
         return True
     la, lb = a.splitlines(), b.splitlines()
     if len(la) != len(lb):
         return False
+    scale = 1e-30
+    for x in la:
+        for u in NUMRE.findall(x):
+            if "nan" not in u and "inf" not in u:
+                scale = max(scale, abs(float(u)))
     for x, y in zip(la, lb):
         if x == y:
             continue
@@ -229,7 +239,7 @@ def ir_equivalent(a, b, onset_tol=1e-11):
             d = abs(fu - fv)
             if d == 0.0:
                 continue
-            return d <= onset_tol * max(abs(fu), abs(fv), 1e-30)
+            return d <= onset_tol * max(abs(fu), abs(fv), scale)
     return True
 
 def main():

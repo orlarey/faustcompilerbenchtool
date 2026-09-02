@@ -143,11 +143,19 @@ def impulse(binp, n=60000):
 NUMRE = re.compile(r"-?\d+\.?\d*(?:[eE][+-]?\d+)?|nan|inf")
 
 def ir_equivalent(a, b, onset_tol=1e-11):
+    """Onset criterion (see fcautotool) : the tolerance is relative to the
+    SCALE of the reference signal, never below the compared values' own --
+    a 4e-16 residue against an exact 0 is a legal reassociation."""
     if a == b:
         return True
     la, lb = a.splitlines(), b.splitlines()
     if len(la) != len(lb):
         return False
+    scale = 1e-30
+    for x in la:
+        for u in NUMRE.findall(x):
+            if "nan" not in u and "inf" not in u:
+                scale = max(scale, abs(float(u)))
     for x, y in zip(la, lb):
         if x == y:
             continue
@@ -161,7 +169,7 @@ def ir_equivalent(a, b, onset_tol=1e-11):
             d = abs(fu - fv)
             if d == 0.0:
                 continue
-            return d <= onset_tol * max(abs(fu), abs(fv), 1e-30)
+            return d <= onset_tol * max(abs(fu), abs(fv), scale)
     return True
 
 def main():
