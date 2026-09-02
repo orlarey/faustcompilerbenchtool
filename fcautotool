@@ -92,8 +92,9 @@ CAND = {
 # "which options". Judged like the others ; gated against their own
 # backend's default (legal reassociations differ across backends).
 LANGCAND = {
-    "cpp":    ("cpp", []),
-    "cppvec": ("cpp", ["-vec"]),
+    "cpp":     ("cpp", []),
+    "cppvec":  ("cpp", ["-vec"]),
+    "cppmcd0": ("cpp", ["-mcd", "0"]),
 }
 
 def cand_lang(name):
@@ -360,7 +361,7 @@ def main():
         return f"-lang {cand_lang(name)} {opts}".strip()
     for name in sorted(built, key=lambda n: min(times[n]) if times[n] else 1e30):
         if times[name]:
-            print(f"  {name:<6} {min(times[name]):8.4f} ns  ({label(name)})")
+            print(f"  {name:<8} {min(times[name]):8.4f} ns  ({label(name)})")
 
     # correctness gate, walked down the ranking ; each candidate is gated
     # against its OWN backend's default (legal reassociations differ across
