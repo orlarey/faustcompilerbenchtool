@@ -207,6 +207,16 @@ def impulse(binp, n=60000):
 
 NUMRE = re.compile(r"-?\d+\.?\d*(?:[eE][+-]?\d+)?|nan|inf")
 
+def ir_scale(a):
+    """largest magnitude of an impulse response (the scale the onset
+    tolerance is relative to)"""
+    scale = 0.0
+    for x in a.splitlines():
+        for u in NUMRE.findall(x):
+            if "nan" not in u and "inf" not in u:
+                scale = max(scale, abs(float(u)))
+    return scale
+
 def ir_equivalent(a, b, onset_tol=1e-11):
     """Onset criterion : only the FIRST divergence is judged. Ulp-class
     (< onset_tol relative) = legal floating-point reassociation ; a finite
@@ -334,6 +344,12 @@ def main():
             _, refbin, _ = build(a.dsp, f"gate-ref-{lang}", [], workdir, share,
                                  double=True, lang=lang)
             refs[lang] = impulse(refbin) if refbin else None
+            if refs[lang] is not None and ir_scale(refs[lang]) < 1e-9:
+                # an instrument without a note, a program gated on a
+                # button : the impulse response is silence, and a silent
+                # reference accepts anything -- say so (the gate is void)
+                print(f"  GATE VOID for -lang {lang}: the default's impulse response is "
+                      f"silent (scale {ir_scale(refs[lang]):.3g}) ; correctness is NOT checked")
         return refs[lang]
     best = None
     ungated = set()

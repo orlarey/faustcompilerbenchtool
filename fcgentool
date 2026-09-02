@@ -142,6 +142,16 @@ def impulse(binp, n=60000):
 
 NUMRE = re.compile(r"-?\d+\.?\d*(?:[eE][+-]?\d+)?|nan|inf")
 
+def ir_scale(a):
+    """largest magnitude of an impulse response (the scale the onset
+    tolerance is relative to)"""
+    scale = 0.0
+    for x in a.splitlines():
+        for u in NUMRE.findall(x):
+            if "nan" not in u and "inf" not in u:
+                scale = max(scale, abs(float(u)))
+    return scale
+
 def ir_equivalent(a, b, onset_tol=1e-11):
     """Onset criterion (see fcautotool) : the tolerance is relative to the
     SCALE of the reference signal, never below the compared values' own --
@@ -299,6 +309,9 @@ def main():
     if ref_ir is None:
         print("GATE IMPOSSIBLE: the default does not build or run in -double ; "
               "the champion cannot be validated and is NOT recorded")
+    elif ir_scale(ref_ir) < 1e-9:
+        print(f"GATE VOID: the default's impulse response is silent (scale "
+              f"{ir_scale(ref_ir):.3g}) ; the champion's correctness is NOT checked")
     ok = ref_ir is not None and ch_ir is not None and ir_equivalent(ref_ir, ch_ir)
     if ok:
         envs = " ".join(f"{k}={v}" for k, v in sorted(env.items()))
