@@ -326,12 +326,22 @@ def main():
             refs[lang] = impulse(refbin) if refbin else None
         return refs[lang]
     best = None
+    ungated = set()
     for name in ranked:
         lang = cand_lang(name)
-        ref_ir = ref_ir_for(lang)
-        if not cand_flags(name, jury) or ref_ir is None:
+        if not cand_flags(name, jury):
             best = name  # a backend's default is its own reference
             break
+        ref_ir = ref_ir_for(lang)
+        if ref_ir is None:
+            # no reference, no gate, no election : the default wins by
+            # forfeit and the failure is SAID (a silent pass here let
+            # display-dropping candidates through a whole campaign)
+            if lang not in ungated:
+                print(f"  GATE IMPOSSIBLE for -lang {lang}: its default does not build "
+                      f"or run in -double ; every -lang {lang} candidate is set aside")
+                ungated.add(lang)
+            continue
         _, gbin, _ = build(a.dsp, f"gate-{name}", cand_flags(name, jury), workdir, share,
                            double=True, lang=lang, env=cand_env(name))
         el_ir = impulse(gbin) if gbin else None

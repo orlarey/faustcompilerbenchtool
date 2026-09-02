@@ -404,7 +404,7 @@ class UI {
                                      FAUSTFLOAT max)                                   = 0;
     virtual void addSoundfile(const char* label, const char* filename, Soundfile** sf_zone) =0;
     virtual void addText(const char* text)                                             = 0;
-    virtual void declare(float* zone, const char* key, const char* value)              = 0;
+    virtual void declare(FAUSTFLOAT* zone, const char* key, const char* value)              = 0;
     virtual void declare(const char* key, const char* value)                           = 0;
 };
 

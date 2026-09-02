@@ -288,7 +288,10 @@ def main():
     chbin = build(a.dsp, "gate-champ", fl, env, wd, share, double=True)
     ref_ir = impulse(refbin) if refbin else None
     ch_ir = impulse(chbin) if chbin else None
-    ok = ref_ir is None or (ch_ir is not None and ir_equivalent(ref_ir, ch_ir))
+    if ref_ir is None:
+        print("GATE IMPOSSIBLE: the default does not build or run in -double ; "
+              "the champion cannot be validated and is NOT recorded")
+    ok = ref_ir is not None and ch_ir is not None and ir_equivalent(ref_ir, ch_ir)
     if ok:
         envs = " ".join(f"{k}={v}" for k, v in sorted(env.items()))
         print(f"CHAMPION VALID: {best:.3f} ns : {' '.join(fl)} {envs}")

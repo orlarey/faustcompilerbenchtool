@@ -62,7 +62,7 @@ class UI {
     virtual void addVerticalBargraph(const char* label, FAUSTFLOAT* zone, FAUSTFLOAT min,
                                      FAUSTFLOAT max)                                   = 0;
     virtual void addText(const char* text)                                             = 0;
-    virtual void declare(float* zone, const char* key, const char* value)              = 0;
+    virtual void declare(FAUSTFLOAT* zone, const char* key, const char* value)              = 0;
     virtual void declare(const char* key, const char* value)                           = 0;
 };
 

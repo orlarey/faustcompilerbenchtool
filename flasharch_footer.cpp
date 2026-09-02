@@ -56,7 +56,7 @@ struct SetDefaultUI : public UI {
     void addHorizontalBargraph(const char* l, FAUSTFLOAT* z, FAUSTFLOAT, FAUSTFLOAT) override { bargraphs.push_back({l, z}); }
     void addVerticalBargraph(const char* l, FAUSTFLOAT* z, FAUSTFLOAT, FAUSTFLOAT) override { bargraphs.push_back({l, z}); }
     void addText(const char*) override {}
-    void declare(float*, const char*, const char*) override {}
+    void declare(FAUSTFLOAT*, const char*, const char*) override {}
     void declare(const char*, const char*) override {}
 };
 
