@@ -8,12 +8,16 @@
 //                    scheduling noise).
 //   FLASH_IR=<n>   : correctness probe. Impulse on every input at t=0, renders
 //                    n samples, prints them at full precision (17 significant
-//                    digits) -- one line per sample, one column per output.
+//                    digits) -- one line per sample, one column per output --
+//                    plus, after each block, one line with every bargraph zone
+//                    (a dropped display is a wrong program too).
 // Knobs (environment) : FLASH_COUNT (512), FLASH_WARM (400), FLASH_REPS (30),
 // FLASH_BLOCKS (200), FLASH_SPIN_MS (200), FLASH_SCRUB (0 KB).
 
 #include <cstdio>
 #include <cstring>
+#include <vector>
+#include <utility>
 
 static int envInt(const char* name, int dflt)
 {
@@ -27,6 +31,7 @@ static int envInt(const char* name, int dflt)
 // work depends on a control, the measured cost is the cost of garbage.
 // The old backend passes the initial value as the THIRD argument.
 struct SetDefaultUI : public UI {
+    std::vector<std::pair<const char*, FAUSTFLOAT*>> bargraphs;  // the display zones, for the correctness probe
     void openTabBox(const char*) override {}
     void openHorizontalBox(const char*) override {}
     void openVerticalBox(const char*) override {}
@@ -48,8 +53,8 @@ struct SetDefaultUI : public UI {
     {
         *z = init;
     }
-    void addHorizontalBargraph(const char*, FAUSTFLOAT*, FAUSTFLOAT, FAUSTFLOAT) override {}
-    void addVerticalBargraph(const char*, FAUSTFLOAT*, FAUSTFLOAT, FAUSTFLOAT) override {}
+    void addHorizontalBargraph(const char* l, FAUSTFLOAT* z, FAUSTFLOAT, FAUSTFLOAT) override { bargraphs.push_back({l, z}); }
+    void addVerticalBargraph(const char* l, FAUSTFLOAT* z, FAUSTFLOAT, FAUSTFLOAT) override { bargraphs.push_back({l, z}); }
     void addText(const char*) override {}
     void declare(float*, const char*, const char*) override {}
     void declare(const char*, const char*) override {}
@@ -96,6 +101,14 @@ int main()
                 }
                 printf("\n");
             }
+            // the displays are part of the program's observable behaviour :
+            // one line per block with every bargraph zone, so a candidate
+            // that silently dropped its displays cannot pass the gate
+            printf("bargraphs");
+            for (auto& b : ui.bargraphs) {
+                printf(" %.17g", double(*b.second));
+            }
+            printf("\n");
             for (int i = 0; i < nins; i++) {
                 in[i][0] = FAUSTFLOAT(0);  // the impulse lives in the first block only
             }
