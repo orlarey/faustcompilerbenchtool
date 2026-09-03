@@ -148,12 +148,17 @@ def supported_jury(workdir):
     return jury
 
 def signature(dsp):
-    """Optional static probe (development compilers only) ; None if absent."""
-    r = subprocess.run([FAUST, "-lang", "ocpp", "-I",
-                        os.path.dirname(os.path.abspath(dsp)) or ".", dsp, "-o", os.devnull],
-                       env=dict(os.environ, FAUST_SS_SIG="1"),
-                       capture_output=True, text=True)
-    m = re.search(r"SS_SIG ([^\n]*)", r.stderr or "")
+    """The program's static signature, from `faust -sig` (one line on stdout :
+    SS_SIG nodes=... recmii=... nselect=... nalu=... nmem=... nstreams=...
+    speak64=... distinct=... bankablepct=... top1=... top2=... top3=...) ;
+    None on a faust without the option -- the full jury is raced then."""
+    try:
+        r = subprocess.run([FAUST, "-sig", "-lang", "ocpp", "-I",
+                            os.path.dirname(os.path.abspath(dsp)) or ".", dsp, "-o", os.devnull],
+                           capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        return None
+    m = re.search(r"SS_SIG ([^\n]*)", (r.stdout or "") + "\n" + (r.stderr or ""))
     if not m:
         return None
     return {k: int(v) for k, v in re.findall(r"(\w+)=(\d+)", m.group(1))}
