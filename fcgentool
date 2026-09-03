@@ -81,8 +81,6 @@ GENES = {
 # Environment-carried genes, each tied to the flag capability that makes it
 # meaningful (an env a compiler ignores would only waste evaluations).
 ENVGENES = {
-    "tau":   ("gq",   [{}, {"FAUST_GATEQUIV_TAU": "6"}, {"FAUST_GATEQUIV_TAU": "24"}]),
-    "atoms": ("lazy", [{}, {"FAUST_LZ_ATOMS": "2"}, {"FAUST_LZ_ATOMS": "6"}]),
 }
 
 def detect_genome(workdir):
