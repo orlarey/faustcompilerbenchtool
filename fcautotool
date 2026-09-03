@@ -180,7 +180,7 @@ def shortlist(sig, jury):
         cand += ["lz", "gqlz", "t4", "sn", "gqsn"]
     return [c for c in dict.fromkeys(cand) if c in jury]
 
-def build(dsp, name, flags, workdir, share, double=False, lang="ocpp", env=None):
+def build(dsp, name, flags, workdir, share, double=False, lang="ocpp", env=None, cxxextra=None):
     """faust -> bare body ; header+body+footer -> binary.
     Returns (body, binary, why) -- why is the failure's first stderr line."""
     body = os.path.join(workdir, f"{name}{'-d' if double else ''}.body.cpp")
@@ -204,7 +204,7 @@ def build(dsp, name, flags, workdir, share, double=False, lang="ocpp", env=None)
     binp = src[:-4]
     extra = ["-DFAUSTFLOAT=double"] if double else []
     try:
-        r = subprocess.run([CXX, *CXXFLAGS, *ARCH_FLAGS, *extra,
+        r = subprocess.run([CXX, *CXXFLAGS, *ARCH_FLAGS, *extra, *(cxxextra or []),
                             "-I", os.path.dirname(os.path.abspath(dsp)) or ".",
                             src, "-o", binp],
                            capture_output=True, text=True, timeout=300)
@@ -366,19 +366,41 @@ def main():
     # correctness gate, walked down the ranking ; each candidate is gated
     # against its OWN backend's default (legal reassociations differ across
     # backends), computed lazily per language
+    # The gate has two tiers. STRICT : both probes compiled -double with
+    # -ffp-contract=off, tolerance 1e-11 of the signal's scale -- this judges
+    # faust's transformations at IEEE rounding, operation by operation, where
+    # two equivalent writings of the same arithmetic agree to the ulp. The
+    # judge's FMA contraction (GCC's default on any target with the
+    # instruction, clang's only within an expression) is NOT a property of
+    # the candidate : it moves the default and the candidate alike, and
+    # differently -- churchOrgan under g++ drifted to 1e-5 between two
+    # equivalent writings, 2e-14 with contraction off. PRODUCTION : both
+    # probes with the bench's own flags, tolerance 1e-5 of the scale -- this
+    # only catches a candidate whose shape blows up numerically under the
+    # flags that will actually run ; an ordinary contraction difference does
+    # not bite.
+    STRICT = ["-ffp-contract=off"]
+    LOOSE_TOL = 1e-5
     ranked = sorted((n for n in built if times[n]), key=lambda n: min(times[n]))
     refs = {}
     def ref_ir_for(lang):
         if lang not in refs:
-            _, refbin, _ = build(a.dsp, f"gate-ref-{lang}", [], workdir, share,
-                                 double=True, lang=lang)
-            refs[lang] = impulse(refbin) if refbin else None
-            if refs[lang] is not None and ir_scale(refs[lang]) < 1e-9:
+            _, sbin, _ = build(a.dsp, f"gate-ref-{lang}-strict", [], workdir, share,
+                               double=True, lang=lang, cxxextra=STRICT)
+            _, pbin, _ = build(a.dsp, f"gate-ref-{lang}", [], workdir, share,
+                               double=True, lang=lang)
+            strict = impulse(sbin) if sbin else None
+            prod = impulse(pbin) if pbin else None
+            if strict is not None and ir_scale(strict) < 1e-9:
                 # an instrument without a note, a program gated on a
                 # button : the impulse response is silence, and a silent
                 # reference accepts anything -- say so (the gate is void)
                 print(f"  GATE VOID for -lang {lang}: the default's impulse response is "
-                      f"silent (scale {ir_scale(refs[lang]):.3g}) ; correctness is NOT checked")
+                      f"silent (scale {ir_scale(strict):.3g}) ; correctness is NOT checked")
+            if strict is not None and prod is None:
+                print(f"  GATE (production tier) unavailable for -lang {lang}: the default "
+                      f"does not build or run under the bench flags ; strict tier only")
+            refs[lang] = (strict, prod)
         return refs[lang]
     best = None
     ungated = set()
@@ -387,8 +409,8 @@ def main():
         if not cand_flags(name, jury):
             best = name  # a backend's default is its own reference
             break
-        ref_ir = ref_ir_for(lang)
-        if ref_ir is None:
+        ref_strict, ref_prod = ref_ir_for(lang)
+        if ref_strict is None:
             # no reference, no gate, no election : the default wins by
             # forfeit and the failure is SAID (a silent pass here let
             # display-dropping candidates through a whole campaign)
@@ -397,13 +419,23 @@ def main():
                       f"or run in -double ; every -lang {lang} candidate is set aside")
                 ungated.add(lang)
             continue
-        _, gbin, _ = build(a.dsp, f"gate-{name}", cand_flags(name, jury), workdir, share,
-                           double=True, lang=lang, env=cand_env(name))
-        el_ir = impulse(gbin) if gbin else None
-        if el_ir is not None and ir_equivalent(ref_ir, el_ir):
-            best = name
-            break
-        print(f"  {name}: DISQUALIFIED (impulse response differs from its backend's default)")
+        _, sbin, _ = build(a.dsp, f"gate-{name}-strict", cand_flags(name, jury), workdir, share,
+                           double=True, lang=lang, env=cand_env(name), cxxextra=STRICT)
+        el_strict = impulse(sbin) if sbin else None
+        if el_strict is None or not ir_equivalent(ref_strict, el_strict):
+            print(f"  {name}: DISQUALIFIED (strict tier : impulse response differs from its "
+                  f"backend's default at IEEE rounding, -ffp-contract=off)")
+            continue
+        if ref_prod is not None:
+            _, pbin, _ = build(a.dsp, f"gate-{name}", cand_flags(name, jury), workdir, share,
+                               double=True, lang=lang, env=cand_env(name))
+            el_prod = impulse(pbin) if pbin else None
+            if el_prod is None or not ir_equivalent(ref_prod, el_prod, onset_tol=LOOSE_TOL):
+                print(f"  {name}: DISQUALIFIED (production tier : diverges beyond {LOOSE_TOL:g} "
+                      f"of the signal's scale under the bench flags -- numerical blow-up)")
+                continue
+        best = name
+        break
     if best is None:
         best = "df" if "df" in built else ranked[0]
 

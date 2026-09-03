@@ -121,7 +121,7 @@ def flags_of(g, genes):
             fl += a
     return fl, env
 
-def build(dsp, tag, flags, env, workdir, share, double=False):
+def build(dsp, tag, flags, env, workdir, share, double=False, cxxextra=None):
     body = os.path.join(workdir, f"{tag}.body.cpp")
     fopts = ["-double"] if double else []
     try:
@@ -139,7 +139,7 @@ def build(dsp, tag, flags, env, workdir, share, double=False):
     binp = src[:-4]
     extra = ["-DFAUSTFLOAT=double"] if double else []
     try:
-        r = subprocess.run([CXX, *CXXFLAGS, *ARCH_FLAGS, *extra,
+        r = subprocess.run([CXX, *CXXFLAGS, *ARCH_FLAGS, *extra, *(cxxextra or []),
                             "-I", os.path.dirname(os.path.abspath(dsp)) or ".",
                             src, "-o", binp],
                            capture_output=True, timeout=300)
@@ -321,8 +321,12 @@ def main():
     # impulse response (both compiled -double) at the onset criterion
     print("\nchecking the champion's correctness...", flush=True)
     fl, env = flags_of(bestg, genes)
-    refbin = build(a.dsp, "gate-ref", [], {}, wd, share, double=True)
-    chbin = build(a.dsp, "gate-champ", fl, env, wd, share, double=True)
+    # two tiers (see fcautotool) : STRICT at -ffp-contract=off, 1e-11 of the
+    # scale, judges faust ; PRODUCTION under the bench flags, 1e-5 of the
+    # scale, catches a numerical blow-up under the flags that will run
+    STRICT = ["-ffp-contract=off"]
+    refbin = build(a.dsp, "gate-ref-strict", [], {}, wd, share, double=True, cxxextra=STRICT)
+    chbin = build(a.dsp, "gate-champ-strict", fl, env, wd, share, double=True, cxxextra=STRICT)
     ref_ir = impulse(refbin) if refbin else None
     ch_ir = impulse(chbin) if chbin else None
     if ref_ir is None:
@@ -332,6 +336,17 @@ def main():
         print(f"GATE VOID: the default's impulse response is silent (scale "
               f"{ir_scale(ref_ir):.3g}) ; the champion's correctness is NOT checked")
     ok = ref_ir is not None and ch_ir is not None and ir_equivalent(ref_ir, ch_ir)
+    if not ok and ref_ir is not None:
+        print("champion DISQUALIFIED at the strict tier (IEEE rounding, -ffp-contract=off)")
+    if ok:
+        prefbin = build(a.dsp, "gate-ref", [], {}, wd, share, double=True)
+        pchbin = build(a.dsp, "gate-champ", fl, env, wd, share, double=True)
+        pref = impulse(prefbin) if prefbin else None
+        pch = impulse(pchbin) if pchbin else None
+        if pref is not None and (pch is None or not ir_equivalent(pref, pch, onset_tol=1e-5)):
+            ok = False
+            print("champion DISQUALIFIED at the production tier (diverges beyond 1e-5 of the "
+                  "scale under the bench flags -- numerical blow-up)")
     if ok:
         envs = " ".join(f"{k}={v}" for k, v in sorted(env.items()))
         print(f"CHAMPION VALID: {best:.3f} ns : {' '.join(fl)} {envs}")
