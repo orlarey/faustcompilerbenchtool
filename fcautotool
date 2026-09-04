@@ -15,7 +15,7 @@ compilation's impulse response (compiled -double) at the onset criterion --
 what matters is the FIRST divergence ; a wrong-but-fast candidate is
 disqualified and the next in line inherits.
 
-Usage : fcautotool foo.dsp [-o foo.cpp] [--full] [--rounds N] [--keep]
+Usage : fcautotool foo.dsp [--pn NAME] [-o foo.cpp] [--full] [--rounds N] [--keep]
 The emitted file is the BARE faust output of the elected candidate (no
 architecture wrapper) : reuse it, or re-run faust with the printed options
 and your own architecture.
@@ -147,13 +147,15 @@ def supported_jury(workdir):
             jury[name] = flags
     return jury
 
+PN = []  # ["-pn", NAME] when an entry point other than process is elected
+
 def signature(dsp):
     """The program's static signature, from `faust -sig` (one line on stdout :
     SS_SIG nodes=... recmii=... nselect=... nalu=... nmem=... nstreams=...
     speak64=... distinct=... bankablepct=... top1=... top2=... top3=...) ;
     None on a faust without the option -- the full jury is raced then."""
     try:
-        r = subprocess.run([FAUST, "-sig", "-lang", "ocpp", "-I",
+        r = subprocess.run([FAUST, "-sig", *PN, "-lang", "ocpp", "-I",
                             os.path.dirname(os.path.abspath(dsp)) or ".", dsp, "-o", os.devnull],
                            capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired:
@@ -191,7 +193,7 @@ def build(dsp, name, flags, workdir, share, double=False, lang="ocpp", env=None,
     body = os.path.join(workdir, f"{name}{'-d' if double else ''}.body.cpp")
     fopts = ["-double"] if double else []
     try:
-        r = subprocess.run([FAUST, "-lang", lang, *fopts, *flags, "-I", os.path.dirname(os.path.abspath(dsp)) or ".", dsp, "-o", body],
+        r = subprocess.run([FAUST, *PN, "-lang", lang, *fopts, *flags, "-I", os.path.dirname(os.path.abspath(dsp)) or ".", dsp, "-o", body],
                            env={**os.environ, **(env or {})},
                            capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired:
@@ -288,12 +290,16 @@ def ir_equivalent(a, b, onset_tol=1e-11):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("dsp")
+    ap.add_argument("--pn", metavar="NAME", default=None,
+                    help="elect this entry point of the file instead of process (faust -pn NAME)")
     ap.add_argument("-o", "--output", help="write the elected candidate's bare faust output here")
     ap.add_argument("--rounds", type=int, default=2)
     ap.add_argument("--full", action="store_true",
                     help="skip the static shortlist, race every supported candidate")
     ap.add_argument("--keep", action="store_true", help="keep the working directory")
     a = ap.parse_args()
+    if a.pn:
+        PN[:] = ["-pn", a.pn]
 
     t0 = time.time()
     share = share_dir()
