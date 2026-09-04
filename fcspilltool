@@ -35,6 +35,16 @@
 #   all_spills:          T  # whole translation unit (incl. STL/harness)
 #   all_stack:           A
 #   total:               N  # alias of compute_spills
+#   judge:               J  # the compiler that produced the numbers above:
+#                           #   resolved path of $CXX and its version line.
+#                           #   Spill counts are a property of the register
+#                           #   allocator, not of the source: the same body
+#                           #   gave englishBell 49 under clang 22.1.8 and
+#                           #   66 under Apple clang 21 (and the ranking of
+#                           #   -ss variants changed with it). A count read
+#                           #   without its judge is not comparable to any
+#                           #   other. Not emitted in --per-loop mode, whose
+#                           #   TSV must stay joinable.
 #
 # WHAT THESE NUMBERS MEAN — IMPORTANT
 #
@@ -126,6 +136,11 @@ To use fcspilltool, set CXX to a clang-based compiler:
 EOF
     exit 2
 fi
+
+# The judge, named once and printed last: which binary $CXX resolved to,
+# and what it says it is. After a session's PATH silently changed,
+# `clang++` meant a different compiler and every count moved.
+JUDGE="$(command -v "$CXX") $("$CXX" --version 2>/dev/null | head -1)"
 
 # ----------------------------------------------------------------------
 # Wrap and compile
@@ -302,6 +317,7 @@ if [ "$MODE" = all ]; then
     awk -v COMPUTE_PAT="$COMPUTE_PATTERN" -v OUTER_LINES="$OUTER_LINES" \
         -v PERLOOP=0 -v HDRLINES="$HDRLINES" \
         -f "$AWK_SCRIPT" "$RECORD" | grep -E '^(all_[a-z]+|total):'
+    printf 'judge:                %s\n' "$JUDGE"
 elif [ "$MODE" = perloop ]; then
     printf 'line\tkind\tspills\tcost\n'
     awk -v COMPUTE_PAT="$COMPUTE_PATTERN" -v OUTER_LINES="$OUTER_LINES" \
@@ -311,4 +327,5 @@ else
     awk -v COMPUTE_PAT="$COMPUTE_PATTERN" -v OUTER_LINES="$OUTER_LINES" \
         -v PERLOOP=0 -v HDRLINES="$HDRLINES" \
         -f "$AWK_SCRIPT" "$RECORD"
+    printf 'judge:                %s\n' "$JUDGE"
 fi
