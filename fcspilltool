@@ -266,7 +266,7 @@ function value(line) {
 }
 
 /^--- !/ {
-    in_rec=1; pass=""; name=""; fn=""; line=0
+    in_rec=1; pass=""; name=""; fn=""; line=0; in_dbg=0
     numvr=0; cost=0; stackb=0
     next
 }
@@ -274,11 +274,33 @@ function value(line) {
 in_rec && /^Pass:/             { pass = $2 }
 in_rec && /^Name:/             { name = $2 }
 in_rec && /^Function:/         { fn   = $2 }
+# DebugLoc is a YAML flow mapping, `{ File: ..., Line: N, Column: C }`.
+# LLVM's emitter WRAPS it when the file path is long, leaving `Line:` on
+# a continuation line — which happens as soon as the tool is called with
+# an absolute path from another directory. Reading only the `DebugLoc:`
+# line then yields line 0 for every record, silently: the outer loop is
+# no longer recognised (compute_outer_spills falls to 0 and the block
+# loop lands in the inner bucket) and --per-loop prints -HDRLINES for
+# every row. So: take Line: from the DebugLoc line if it is there, and
+# from the continuation otherwise.
 in_rec && /^DebugLoc:/ {
+    if ($0 ~ /Line:/) {
+        l = $0
+        sub(/.*Line:[[:space:]]*/, "", l)
+        sub(/[,}].*/, "", l)
+        line = l + 0
+    } else {
+        in_dbg = 1
+    }
+    next
+}
+
+in_rec && in_dbg && /Line:/ {
     l = $0
     sub(/.*Line:[[:space:]]*/, "", l)
-    sub(/,.*/, "", l)
+    sub(/[,}].*/, "", l)
     line = l + 0
+    in_dbg = 0
 }
 in_rec && /NumVRCopies:/       { numvr  = value($0) + 0 }
 in_rec && /TotalCopiesCost:/   { cost   = value($0) + 0 }
