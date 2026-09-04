@@ -747,7 +747,7 @@ Output is `key: value`, one per line:
 | `compute_spills` | virtual-register copies at function level in `compute()` |
 | `compute_outer_spills` | copies charged to the outer orchestration loop — `vindex` in `-vec` mode, the `index += 32` block loop in `ocpp` (0 only in plain scalar `cpp`, which has neither) |
 | `compute_inner_spills` | copies charged to the inner vectorizable loops — the hot path |
-| `compute_inner_max` | worst single inner loop |
+| `compute_inner_max` | worst single inner loop — per-loop pressure, not a predictor of runtime (see below) |
 | `compute_inner_count` | how many inner loop records contributed |
 | `compute_loop_spills` | `compute_outer_spills + compute_inner_spills` (kept for backwards compatibility) |
 | `compute_cost` | LLVM's estimate of their cycle cost |
@@ -764,7 +764,14 @@ Output is `key: value`, one per line:
 
 Measured on the Faust example suite (clang 22), the outer `vindex` loop alone accounts for 26–100 % of loop-level spill copies, while `compute_inner_max` stays in the 0–10 range for most programs: the pressure lives in the orchestration of intermediate vectors, not in the vectorizable loops themselves.
 
-**`compute_inner_max` compares structurings, not sizes.** It answers "did this restructuring relieve the hot loop?", not "is this program slow?". On a corpus where every program emits a single fused inner loop, it carries no information beyond size. Where it earns its keep is the fusion/tiling comparison: on a 9×9 filter matrix, expressing the same 81 filters as nine 3×3 tiles takes the worst inner loop from 49 copies down to 26 and the program runs 1.83× faster — while every sum-based metric (`compute_spills`, `compute_inner_spills`, `compute_cost`) moves the *opposite* way, because there are now five times as many loop records to sum over.
+**None of these predict runtime, except `compute_stack`.** Measured twice, on two corpora, same judge:
+
+- *81 filter matrices* (`m11`…`m99`, `ocpp`), timings against every metric with program size controlled for: only `compute_stack` survives (partial r = +0.50, p = 2e-6); every spill-copy count sits at |r| < 0.12.
+- *6 programs × 5 emission variants at constant arithmetic.* Where only the **order** of the statements changes (`-ss`), `compute_inner_max` agrees with the timings' direction 52 % of the time — a coin flip — while the timings themselves spread by 117 to 208 % at a noise floor of 0.04 %. Where the **loop structure** changes (`-ls` and its fusions), `compute_inner_max` is *anti*-correlated (r = −0.53, p = 0.01): bare `-ls` splits into 55 or 99 tiny loops, drops `compute_inner_max` to 2, and is the slowest variant of all, having traded register pressure for materialised intermediates. `compute_stack` tracks that trade (r = +0.67, p < 0.001).
+
+So `compute_inner_max` answers what it says — per-loop pressure, and it is right that bare `-ls` relieves the bank — but per-loop pressure is not what governs time once the number of loops varies. Read it to understand a body, read `compute_stack` to guess whether it will be slow, and measure with `fcmultibench` to know.
+
+**On splitting: the variable is granularity, not "split or not".** Expressing a 9×9 filter matrix as nine 3×3 tiles runs 1.83× faster than one fused loop and takes the worst inner loop from 49 copies to 26; bare `-ls` on the same kind of program splits into 55 loops, drops the worst to 2, and is *slower* than not splitting at all. There is an optimum between one huge loop and a hundred tiny ones — the fused variants (`-ls-fuse`, `-ls-R 32 -ls-U 4`) sit near it and win in five programs of six.
 
 `compute_spills` also scales with function *size*, so comparing `compute()` between scalar and `-vec` modes is misleading — `-vec` inlines many small loops into one big `compute()`. For mode-to-mode comparison prefer `compute_inner_max` (per-loop pressure) and `compute_stack` (a direct byte count of local materialisations).
 
@@ -829,4 +836,4 @@ fcspillgraph.py "*.dsp" "-lang cpp" "-lang cpp -vec" --metric compute_stack
 - **Validate a new Faust flag**: `fcexplorer.py` to generate variants → `fccomparetool` to ensure impulse responses stay identical → `fcbenchtool` to see if the change speeds up or slows down.
 - **Guard against regressions**: run `fcanalyze.py` with your standard configs to keep warnings/errors at zero, then `fcbenchgraph.py` to watch for performance drops across the whole corpus.
 - **Deep-dive a problematic DSP**: capture the impulse response with `fcplottool`, open a debug build with `fcdebugtool` in `gdb`, and inspect hot loops in `foo.s` produced by `fcasmtool`.
-- **Diagnose a slowdown as register pressure**: when `fcbenchtool` shows a regression, run `fcspilltool` on both variants and compare `compute_inner_max` and `compute_stack`; scale it to a whole corpus with `fcspillgraph.py`.
+- **Diagnose a slowdown as register pressure**: when `fcbenchtool` shows a regression, run `fcspilltool` on both variants and compare `compute_stack` first, then `compute_inner_max` to see whether the loop structure moved; scale it to a whole corpus with `fcspillgraph.py`. Neither replaces the timing — only `compute_stack` correlates with it, and then only moderately.

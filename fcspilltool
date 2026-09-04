@@ -24,9 +24,10 @@
 #                           #   has neither)
 #   compute_inner_spills:I  # VR copies charged to the inner
 #                           #   vectorizable loops — the hot path
-#   compute_inner_max:   M  # worst single inner loop. THE number that
+#   compute_inner_max:   M  # worst single inner loop: the number that
 #                           #   answers "does any one loop overflow the
-#                           #   register bank?"
+#                           #   register bank?" — a question about the
+#                           #   code, NOT a predictor of runtime (below)
 #   compute_inner_count: K  # how many inner loop records contributed
 #   compute_loop_spills: L  # O + I (kept for backwards compatibility)
 #   compute_cost:        C  # LLVM's estimate of their cycle cost
@@ -72,6 +73,30 @@
 # many small loops into one big compute(). For mode-to-mode comparison
 # prefer `compute_inner_max` (per-loop pressure) and `compute_stack`
 # (direct byte count of local materialisations).
+#
+# NONE OF THESE PREDICT RUNTIME, EXCEPT compute_stack. Measured twice,
+# on two corpora, same judge:
+#
+#   - 81 filter matrices (m11..m99, ocpp), timings against every metric
+#     with program size controlled for: only compute_stack survives
+#     (partial r = +0.50, p = 2e-6); every spill-copy count sits at
+#     |r| < 0.12.
+#   - 6 programs x 5 emission variants at constant arithmetic. Where
+#     only the ORDER of the statements changes (-ss), compute_inner_max
+#     agrees with the timings' direction 52 % of the time — a coin
+#     flip — while the timings themselves spread by 117 to 208 % at a
+#     noise floor of 0.04 %. Where the LOOP STRUCTURE changes (-ls and
+#     its fusions), compute_inner_max is *anti*-correlated (r = -0.53,
+#     p = 0.01): bare -ls splits into 55 or 99 tiny loops, drops
+#     compute_inner_max to 2, and is the slowest variant of all, having
+#     traded register pressure for materialised intermediates.
+#     compute_stack tracks that trade (r = +0.67, p < 0.001).
+#
+# So compute_inner_max answers what it says — per-loop pressure, and it
+# is right that bare -ls relieves the bank — but per-loop pressure is
+# not what governs time once the number of loops varies. Read it to
+# understand a body, read compute_stack to guess whether it will be
+# slow, and measure with fcmultibench to know.
 #
 # Requires clang. Refuses gcc with a clear message.
 
