@@ -116,10 +116,15 @@ def cand_flags(name, jury):
 def cand_env(name):
     return BK[name][1] if name in BK else {}
 
-def read_book(dsp):
+def read_book(dsp, want_prec="single"):
     """The fcgentool recipe book (./fcrecipes.tsv or FCRECIPES=...) : a
     champion evolved for THIS program joins the race as candidate 'bk',
-    re-judged and correctness-gated like any other."""
+    re-judged and correctness-gated like any other.
+
+    A recipe carries the precision it was bred in (5th column, older books
+    have none and are read as 'single', which is what they were). One bred
+    in the other precision is skipped rather than silently raced: the
+    ordering candidates in particular win in float and not in double."""
     path = os.environ.get("FCRECIPES", "fcrecipes.tsv")
     base = os.path.basename(dsp)
     try:
@@ -128,6 +133,11 @@ def read_book(dsp):
                 continue
             c = l.rstrip("\n").split("\t")
             if len(c) >= 4 and c[0] == base:
+                prec = c[4].strip() if len(c) >= 5 and c[4].strip() else "single"
+                if prec != want_prec:
+                    print(f"fcautotool: book recipe skipped: bred in {prec}, "
+                          f"electing in {want_prec}")
+                    return None
                 env = dict(kv.split("=", 1) for kv in c[3].split() if "=" in kv)
                 return c[2].split(), env
     except FileNotFoundError:
@@ -302,6 +312,15 @@ def main():
     ap.add_argument("--rounds", type=int, default=2)
     ap.add_argument("--full", action="store_true",
                     help="skip the static shortlist, race every supported candidate")
+    ap.add_argument("--double", action="store_true",
+                    help="time the jury in double precision (faust -double, "
+                         "-DFAUSTFLOAT=double), as the program will actually be "
+                         "compiled. Default is single, which is what the jury has "
+                         "always been timed in — and the election differs: on a "
+                         "9x9 filter matrix the -ss 9 ordering is 0.47 of the "
+                         "default in float and 0.95 in double, same binary, same "
+                         "judge. An election run in one precision is not a recipe "
+                         "for the other.")
     ap.add_argument("--keep", action="store_true", help="keep the working directory")
     a = ap.parse_args()
     if a.pn:
@@ -313,6 +332,10 @@ def main():
         jury = supported_jury(probedir)
     print(f"fcautotool: faust = {FAUST}")
     print(f"fcautotool: c++ = {cxx_identity()} {' '.join(CXXFLAGS + ARCH_FLAGS)}")
+    # The precision belongs in the judge line beside the compiler and the faust:
+    # it changes which candidate wins, not merely by how much.
+    print(f"fcautotool: timed in {'double' if a.double else 'single'} precision"
+          + ("" if a.double else "  (--double to elect for a double build)"))
     print(f"fcautotool: jury = {len(jury)}/{len(CAND)} candidates supported: {sorted(jury)}")
     if len(jury) <= 1:
         print("fcautotool: this faust supports none of the optional candidates; "
@@ -327,7 +350,7 @@ def main():
         else:
             print("fcautotool: no signature probe on this faust, racing the full supported jury")
     cands += [n for n in LANGCAND if n not in cands]  # the backend reference points
-    recipe = read_book(a.dsp)
+    recipe = read_book(a.dsp, "double" if a.double else "single")
     if recipe is not None:
         BK["bk"] = recipe
         cands.append("bk")
@@ -348,7 +371,7 @@ def main():
     built = {}
     for name in cands:
         body, binp, why = build(a.dsp, name, cand_flags(name, jury), workdir, share,
-                                lang=cand_lang(name), env=cand_env(name))
+                                double=a.double, lang=cand_lang(name), env=cand_env(name))
         if binp:
             built[name] = (body, binp)
         else:
@@ -456,7 +479,8 @@ def main():
     if best is None:
         best = "df" if "df" in built else ranked[0]
 
-    print(f"fcautotool: winner {best} ({min(times[best]):.4f} ns/frame) -- "
+    print(f"fcautotool: winner {best} ({min(times[best]):.4f} ns/frame, "
+          f"{'double' if a.double else 'single'} precision) -- "
           f"{label(best)}  [{time.time() - t0:.1f} s]")
     if a.output:
         shutil.copyfile(built[best][0], a.output)

@@ -359,9 +359,15 @@ def main():
             lines = [l for l in open(a.book)] if os.path.exists(a.book) else [
                 "# fcgentool recipe book -- per-machine champions, injected by\n",
                 "# fcautotool as candidate 'bk' (correctness-gated at every use).\n",
-                "# basename\tdate\tflags\tenv\n"]
+                "# basename\tdate\tflags\tenv\tprecision\n"]
             lines = [l for l in lines if not l.startswith(base + "\t")]
-            lines.append(f"{base}\t{datetime.date.today()}\t{' '.join(fl)}\t{envs or '-'}\n")
+            # The precision the champion was bred and timed in: a recipe elected
+            # in one precision is not a recipe for the other, and fcautotool
+            # skips a recipe bred in the precision it is not electing in.
+            # fcgentool breeds in single today; when it gains a --double of its
+            # own, this is the line that follows it.
+            prec = "single"
+            lines.append(f"{base}\t{datetime.date.today()}\t{' '.join(fl)}\t{envs or '-'}\t{prec}\n")
             with open(a.book, "w") as f:
                 f.writelines(lines)
             print(f"recorded in {a.book}: {base}")
