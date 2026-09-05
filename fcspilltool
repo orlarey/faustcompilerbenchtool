@@ -138,6 +138,7 @@ while [ $# -gt 0 ]; do
         --all)    MODE=all; shift ;;
         --per-loop) MODE=perloop; shift ;;
         -h|--help) usage; exit 0 ;;
+        --version) "$(dirname "$0")/fcversion" "$0" 2>/dev/null || fcversion "$0"; exit $? ;;
         -*)       echo "fcspilltool: unknown option '$1'" >&2; usage; exit 1 ;;
         *)        break ;;
     esac
@@ -172,20 +173,11 @@ fi
 # `clang++` meant a different compiler and every count moved.
 JUDGE="$(command -v "$CXX") $("$CXX" --version 2>/dev/null | head -1)"
 
-# The tool itself, for the same reason. The installed copy and the
-# repository can drift without anything saying so — the whole point of
-# the DebugLoc fix below is that a wrong version answers plausibly — so
-# report which file ran and, when it comes from a checkout, at which
-# commit. `-dirty` marks uncommitted edits; a copy outside any checkout
-# reports its mtime, which is all there is to identify it by.
-SELF=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
-TOOL_SHA=$(git -C "$(dirname "$SELF")" log -1 --format=%h -- "$SELF" 2>/dev/null || true)
-if [ -n "$TOOL_SHA" ]; then
-    git -C "$(dirname "$SELF")" diff --quiet -- "$SELF" 2>/dev/null || TOOL_SHA="$TOOL_SHA-dirty"
-    TOOL="$SELF @ $TOOL_SHA"
-else
-    TOOL="$SELF (no checkout, mtime $(date -u -r "$SELF" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown))"
-fi
+# The tool itself, for the same reason: the installed copy and the
+# repository drift without anything saying so, and the DebugLoc fix below
+# is exactly the case of a wrong version answering plausibly. fcversion
+# resolves it — checkout commit, install stamp, or mtime.
+TOOL=$("$(dirname "$0")/fcversion" "$0" 2>/dev/null || fcversion "$0" 2>/dev/null || echo unknown)
 
 # ----------------------------------------------------------------------
 # Wrap and compile

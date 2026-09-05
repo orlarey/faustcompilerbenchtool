@@ -16,6 +16,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Any
 
+import sys as _sys
+if "--version" in _sys.argv[1:]:  # answered by fcversion, beside us or on the PATH
+    import os.path as _op, subprocess as _sp
+    _fv = _op.join(_op.dirname(_op.abspath(__file__)), "fcversion")
+    raise SystemExit(_sp.run([_fv if _op.exists(_fv) else "fcversion", __file__]).returncode)
+
 try:
     import matplotlib
     matplotlib.use('Agg')  # Force non-interactive backend for headless environments

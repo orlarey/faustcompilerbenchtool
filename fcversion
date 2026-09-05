@@ -1,0 +1,80 @@
+#!/bin/bash
+
+# fcversion — which version of these tools is running.
+#
+# Every tool here is installed from one repository at one commit, so the
+# toolkit has ONE version, not seventeen. This script resolves it, and the
+# other tools answer `--version` by calling it.
+#
+# Why it exists: the installed copies in /usr/local/bin and the repository
+# drift with nothing to say so, and these tools answer plausibly when they
+# are wrong — a stale fcspilltool once returned zeros for
+# compute_outer_spills without an error. A measurement whose tool cannot be
+# named cannot be reproduced.
+#
+# Three sources, in order:
+#
+#   1. the git checkout the script lives in, if any — the commit of HEAD,
+#      with `-dirty` when the working tree has uncommitted changes;
+#   2. $SHARE/VERSION, written by install.sh at install time;
+#   3. the file's mtime, which is all that is left for a copy that came
+#      from neither.
+#
+#   fcversion              the version of this installation
+#   fcversion <script>     the version behind that script (what a tool's
+#                          --version passes, so that a tool run from a
+#                          checkout reports the checkout and not the
+#                          installed stamp)
+#   fcversion --raw        the bare identifier, for a filename or a field
+
+set -u
+
+SHARE=${FCTOOL_SHARE:-/usr/local/share/fctool}
+
+RAW=0
+case ${1:-} in
+    --raw) RAW=1; shift ;;
+    --version) shift ;;          # `fcversion --version` reports itself
+    -h|--help)
+        sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'
+        exit 0 ;;
+esac
+
+TARGET=${1:-$0}
+# A bare name (no slash) is resolved through the PATH, so `fcversion
+# fcbenchtool` works as well as a full path.
+case $TARGET in
+    */*) ;;
+    *)   TARGET=$(command -v "$TARGET" 2>/dev/null || printf '%s' "$TARGET") ;;
+esac
+
+if [ ! -e "$TARGET" ]; then
+    echo "fcversion: no such file: $TARGET" >&2
+    exit 1
+fi
+
+DIR=$(cd "$(dirname "$TARGET")" 2>/dev/null && pwd) || DIR=""
+
+# 1. a checkout
+if [ -n "$DIR" ] && SHA=$(git -C "$DIR" rev-parse --short HEAD 2>/dev/null); then
+    ROOT=$(git -C "$DIR" rev-parse --show-toplevel 2>/dev/null)
+    WHEN=$(git -C "$DIR" log -1 --format=%cI HEAD 2>/dev/null)
+    git -C "$DIR" diff --quiet HEAD 2>/dev/null || SHA="$SHA-dirty"
+    if [ "$RAW" = 1 ]; then printf '%s\n' "$SHA"
+    else printf '%s committed %s (checkout %s)\n' "$SHA" "$WHEN" "$ROOT"; fi
+    exit 0
+fi
+
+# 2. the stamp left by install.sh
+if [ -r "$SHARE/VERSION" ]; then
+    if [ "$RAW" = 1 ]; then awk '{print $1; exit}' "$SHARE/VERSION"
+    else cat "$SHARE/VERSION"; fi
+    exit 0
+fi
+
+# 3. nothing but the file itself
+MTIME=$(date -u -r "$TARGET" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u -d "@$(stat -c %Y "$TARGET" 2>/dev/null)" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || echo unknown)
+if [ "$RAW" = 1 ]; then printf 'unknown\n'
+else printf 'unknown (no checkout, no %s/VERSION; %s mtime %s)\n' "$SHARE" "$TARGET" "$MTIME"; fi

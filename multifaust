@@ -42,6 +42,7 @@ EOF
 
 case "${1:-}" in
     -h|--help) usage; exit 0 ;;
+    --version) "$(dirname "$0")/fcversion" "$0" 2>/dev/null || fcversion "$0"; exit $? ;;
 esac
 
 if [ $# -ne 3 ]; then

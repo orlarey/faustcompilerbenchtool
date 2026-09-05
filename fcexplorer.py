@@ -5,6 +5,12 @@ import os
 import subprocess
 import sys
 
+import sys as _sys
+if "--version" in _sys.argv[1:]:  # answered by fcversion, beside us or on the PATH
+    import os.path as _op, subprocess as _sp
+    _fv = _op.join(_op.dirname(_op.abspath(__file__)), "fcversion")
+    raise SystemExit(_sp.run([_fv if _op.exists(_fv) else "fcversion", __file__]).returncode)
+
 def generate_combinations(options, option_values):
     # Generate all possible combinations of values for the options
     value_combinations = []

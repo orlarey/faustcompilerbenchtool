@@ -7,6 +7,11 @@ SHARE=/usr/local/share/fctool
 CXXFLAGS=${FCBENCH_CXXFLAGS:--O3 -ffast-math -fbracket-depth=1024}
 ARCH_FLAGS=${FCBENCH_ARCH_FLAGS:--march=native}
 
+# The toolkit's version, answered by fcversion beside us or on the PATH.
+case ${1:-} in
+    --version) "$(dirname "$0")/fcversion" "$0" 2>/dev/null || fcversion "$0"; exit $? ;;
+esac
+
 # check if the user has provided the right number of arguments
 if [ $# -lt 1 ] || [ $# -gt 2 ]; then
     echo "Usage: fcbenchtool <cppfile> [<ext>]"

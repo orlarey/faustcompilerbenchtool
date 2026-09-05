@@ -14,6 +14,12 @@ import sys
 import time
 from pathlib import Path
 
+import sys as _sys
+if "--version" in _sys.argv[1:]:  # answered by fcversion, beside us or on the PATH
+    import os.path as _op, subprocess as _sp
+    _fv = _op.join(_op.dirname(_op.abspath(__file__)), "fcversion")
+    raise SystemExit(_sp.run([_fv if _op.exists(_fv) else "fcversion", __file__]).returncode)
+
 
 MS_PATTERN = re.compile(r"([0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)\s*ms\b")
 
@@ -52,6 +58,20 @@ def compute_stats(values):
         "stddev_ms": stddev,
         "cv_percent": cv,
     }
+
+
+def fctool_version():
+    """Which toolkit produced this measurement — checkout commit, install
+    stamp, or mtime. A figure whose tool cannot be named cannot be redone."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for cmd in (os.path.join(here, "fcversion"), "fcversion"):
+        try:
+            res = run_cmd([cmd, __file__])
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout.strip()
+        except OSError:
+            pass
+    return "unknown"
 
 
 def detect_clang(cxx):
@@ -145,6 +165,7 @@ def main():
     stats = compute_stats(values)
     payload = {
         "tool": "fcmultibench",
+        "fctool_version": fctool_version(),
         "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "cppfile": str(cpp_path),
         "binary": binary_cmd,
