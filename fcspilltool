@@ -36,6 +36,11 @@
 #   all_spills:          T  # whole translation unit (incl. STL/harness)
 #   all_stack:           A
 #   total:               N  # alias of compute_spills
+#   tool:                V  # which fcspilltool ran: its path and, in a
+#                           #   checkout, the commit its file is at
+#                           #   (`-dirty` if edited). The installed copy
+#                           #   and the repository drift silently; a
+#                           #   wrong version answers plausibly.
 #   judge:               J  # the compiler that produced the numbers above:
 #                           #   resolved path of $CXX and its version line.
 #                           #   Spill counts are a property of the register
@@ -166,6 +171,21 @@ fi
 # and what it says it is. After a session's PATH silently changed,
 # `clang++` meant a different compiler and every count moved.
 JUDGE="$(command -v "$CXX") $("$CXX" --version 2>/dev/null | head -1)"
+
+# The tool itself, for the same reason. The installed copy and the
+# repository can drift without anything saying so — the whole point of
+# the DebugLoc fix below is that a wrong version answers plausibly — so
+# report which file ran and, when it comes from a checkout, at which
+# commit. `-dirty` marks uncommitted edits; a copy outside any checkout
+# reports its mtime, which is all there is to identify it by.
+SELF=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
+TOOL_SHA=$(git -C "$(dirname "$SELF")" log -1 --format=%h -- "$SELF" 2>/dev/null || true)
+if [ -n "$TOOL_SHA" ]; then
+    git -C "$(dirname "$SELF")" diff --quiet -- "$SELF" 2>/dev/null || TOOL_SHA="$TOOL_SHA-dirty"
+    TOOL="$SELF @ $TOOL_SHA"
+else
+    TOOL="$SELF (no checkout, mtime $(date -u -r "$SELF" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown))"
+fi
 
 # ----------------------------------------------------------------------
 # Wrap and compile
@@ -365,6 +385,7 @@ if [ "$MODE" = all ]; then
         -v PERLOOP=0 -v HDRLINES="$HDRLINES" \
         -f "$AWK_SCRIPT" "$RECORD" | grep -E '^(all_[a-z]+|total):'
     printf 'judge:                %s\n' "$JUDGE"
+    printf 'tool:                 %s\n' "$TOOL"
 elif [ "$MODE" = perloop ]; then
     printf 'line\tkind\tspills\tcost\n'
     awk -v COMPUTE_PAT="$COMPUTE_PATTERN" -v OUTER_LINES="$OUTER_LINES" \
@@ -375,4 +396,5 @@ else
         -v PERLOOP=0 -v HDRLINES="$HDRLINES" \
         -f "$AWK_SCRIPT" "$RECORD"
     printf 'judge:                %s\n' "$JUDGE"
+    printf 'tool:                 %s\n' "$TOOL"
 fi

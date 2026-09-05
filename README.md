@@ -754,6 +754,7 @@ Output is `key: value`, one per line:
 | `compute_stack` | stack frame bytes of `compute()` — a direct proxy for intermediate-vector materialisation |
 | `all_spills`, `all_stack` | whole translation unit, harness and STL included |
 | `total` | alias of `compute_spills` |
+| `tool` | which `fcspilltool` ran: its path and, inside a checkout, the commit its file is at (`-dirty` when edited); outside one, its mtime. The installed copy and the repository drift silently, and a wrong version answers plausibly — the `DebugLoc` bug below is exactly that |
 | `judge` | the compiler that produced the numbers above: the resolved path of `$CXX` and its version line. Spill counts belong to the register allocator, not to the source — the same body gave 49 copies under clang 22.1.8 and 66 under Apple clang 21, with the ranking of `-ss` variants reordered — so a count read without its judge is not comparable to any other. Not emitted in `--per-loop` mode, whose TSV must stay joinable |
 
 #### How to read these numbers — important
